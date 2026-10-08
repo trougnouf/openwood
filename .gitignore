@@ -12,3 +12,9 @@ decompiled/
 decompiled-bad/
 tools/
 resources/
+
+# makepkg build artifacts in the AUR packaging dir
+packaging/aur/openwood-git/src/
+packaging/aur/openwood-git/pkg/
+packaging/aur/openwood-git/openwood/
+packaging/aur/openwood-git/*.pkg.tar.*
