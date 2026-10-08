@@ -1,0 +1,22 @@
+[Unit]
+Description=Charnwood stove MQTT bridge (openwood)
+Documentation=https://github.com/trougnouf/openwood
+After=bluetooth.target mosquitto.service
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=openwood
+Group=openwood
+# stove registry (see `openwood use`); created once by the admin, e.g.:
+#   sudo env OPENWOOD_CONFIG=/etc/openwood/config.json openwood use
+Environment=OPENWOOD_CONFIG=/etc/openwood/config.json
+Environment=MQTT_HOST=127.0.0.1
+Environment=MQTT_POLL_INTERVAL=20
+EnvironmentFile=/etc/openwood/mqtt.env
+ExecStart=/usr/bin/openwood mqtt --host ${MQTT_HOST} --user ${MQTT_USER} --password ${MQTT_PASSWORD} --name ${STOVE_NAME} --poll-interval ${MQTT_POLL_INTERVAL:-20}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

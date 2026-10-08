@@ -181,7 +181,10 @@ async def run_mqtt_bridge(args) -> int:
         except Exception as e:
             log.error("dispatching command failed: %s", e)
 
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"openwood-{node}")
+    try:
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"openwood-{node}")
+    except AttributeError:  # paho-mqtt 1.x
+        client = mqtt.Client(client_id=f"openwood-{node}")
     if args.user:
         client.username_pw_set(args.user, args.password)
     client.on_message = on_message

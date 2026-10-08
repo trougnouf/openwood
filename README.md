@@ -170,7 +170,25 @@ You can also verify with mosquitto: `mosquitto_sub -t '#' -v`.
 
 ### 4. Run it as a service
 
-`/etc/systemd/system/openwood-mqtt.service` (adjust paths and credentials):
+**Arch / AUR** — the package ships the unit, a dedicated `openwood` service
+user and `/etc/openwood/mqtt.env`:
+
+```sh
+# build/install openwood-git from the AUR (PKGBUILD is kept in
+# packaging/aur/openwood-git/ in this repository)
+makepkg -si   # inside your AUR clone, or use your AUR helper
+
+# pick the stove once (writes /etc/openwood/config.json):
+sudo env OPENWOOD_CONFIG=/etc/openwood/config.json openwood use
+
+# edit /etc/openwood/mqtt.env (MQTT_USER/MQTT_PASSWORD, STOVE_NAME), then:
+sudo systemctl enable --now openwood-mqtt
+journalctl -u openwood-mqtt -f
+```
+
+**Other distros / manual install** — create a unit yourself
+(`/etc/systemd/system/openwood-mqtt.service`), adjusting paths and the user
+(any user works; BlueZ's D-Bus policy allows system-bus clients):
 
 ```ini
 [Unit]
@@ -178,9 +196,6 @@ Description=Charnwood Aire 300 MQTT bridge
 After=bluetooth.target mosquitto.service
 
 [Service]
-Type=simple
-User=trougnouf
-# the machine's user config dirs are read-only, so point the config somewhere writable
 Environment=OPENWOOD_CONFIG=/etc/openwood/config.json
 ExecStart=/orb/Dev/openwood/.venv/bin/openwood mqtt \
     --host 127.0.0.1 --user openwood --password <bridge password> \
@@ -190,15 +205,6 @@ RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-```
-
-Run `openwood use` once as the service user (or copy the config file to
-`/etc/openwood/config.json`) so the bridge knows the default stove, then:
-
-```sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now openwood-mqtt
-journalctl -u openwood-mqtt -f
 ```
 
 ### Notes
