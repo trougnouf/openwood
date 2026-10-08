@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.egg-info/
+src/openwood/config.json
+readings.csv
+
+# reverse-engineering artifacts (large and/or vendor-copyright material):
+# original APK, jadx/apktool outputs, decompiler binaries, vendor manual
+apk/
+apktool-out/
+decompiled/
+decompiled-bad/
+tools/
+resources/

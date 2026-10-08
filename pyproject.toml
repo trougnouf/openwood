@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openwood"
+version = "0.1.0"
+description = "Control a Charnwood E-series stove (Aire 300) over BLE from Linux; MQTT bridge for Home Assistant"
+requires-python = ">=3.9"
+dependencies = [
+    "bleak>=0.21",
+]
+
+[project.optional-dependencies]
+mqtt = ["paho-mqtt>=2.0"]
+
+[project.scripts]
+openwood = "openwood.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
