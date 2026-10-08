@@ -166,7 +166,7 @@ async def run_mqtt_bridge(args) -> int:
         log.error("no stored stove IP; run `openwood status --source ble` once")
         return 2
 
-    poll = float(args.poll_interval)
+    poll = float(getattr(args, "poll_interval", None) or 15.0)
     wifi_mode = ip is not None
     stove = Stove(address)
     ble_stream = False
@@ -192,9 +192,13 @@ async def run_mqtt_bridge(args) -> int:
     prefix = args.topic_prefix.rstrip("/")
 
     # --- external thermostat configuration -----------------------------
-    ext_topic = getattr(args, "ext_temp_topic", None)
-    ext_target = float(getattr(args, "ext_target", 0) or 0)
-    ext_low = float(getattr(args, "ext_setpoint_low", 16))
+    # All ext_* flags are empty-tolerant ("" -> None, for env-file driven
+    # services); Nones fall back to the documented defaults.
+    ext_topic = getattr(args, "ext_temp_topic", None) or None
+    ext_target = getattr(args, "ext_target", None)
+    ext_low = getattr(args, "ext_setpoint_low", None)
+    if ext_low is None:
+        ext_low = 16.0
     ext_comfort = getattr(args, "ext_setpoint_comfort", None)
     if ext_comfort is None and wifi_mode:
         # remember whatever setpoint the stove is normally run at
@@ -204,9 +208,12 @@ async def run_mqtt_bridge(args) -> int:
             ext_comfort = 23.0
     elif ext_comfort is None:
         ext_comfort = stove.state.room_setpoint or 23.0
-    ext_comfort = float(ext_comfort)
-    ext_hyst = float(getattr(args, "ext_hysteresis", 0.5))
-    ext_min_interval = float(getattr(args, "ext_min_interval", 120))
+    ext_hyst = getattr(args, "ext_hysteresis", None)
+    if ext_hyst is None:
+        ext_hyst = 0.5
+    ext_min_interval = getattr(args, "ext_min_interval", None)
+    if ext_min_interval is None:
+        ext_min_interval = 120.0
     ext = {"temp": None, "applied": None, "last_write": 0.0}
     if ext_topic:
         log.info(

@@ -626,7 +626,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--user")
     p.add_argument("--password")
     p.add_argument("--topic-prefix", default="homeassistant")
-    p.add_argument("--poll-interval", type=float, default=15.0)
+    p.add_argument("--poll-interval", type=float_or_none, default=15.0)
     p.add_argument("--name", default=None, help="entity name (defaults to configured name)")
     p.add_argument(
         "--status-source", type=str, default="auto",
