@@ -207,6 +207,35 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
+### External temperature control (optional)
+
+The stove only knows the temperature at its own power-cable sensor, so a
+warm room elsewhere (e.g. a bedroom upstairs) is invisible to it. The
+bridge can act as an external thermostat: it watches any MQTT
+temperature topic and adjusts the stove setpoint accordingly:
+
+```sh
+.venv/bin/openwood mqtt \
+    --host 127.0.0.1 --user openwood --password <pw> \
+    --ext-temp-topic homeassistant/sensor/bedroom_temperature/state \
+    --ext-target 21
+```
+
+- Remote sensor above `target + hysteresis` (default 0.5 C) -> stove
+  setpoint drops to `--ext-setpoint-low` (default 16 = minimum output,
+  keeps the firebed but stops heating hard).
+- Remote sensor at/below `target - hysteresis` -> setpoint returns to the
+  comfort value (`--ext-setpoint-comfort`, defaults to the setpoint the
+  stove was running when the bridge started).
+- Writes are throttled (`--ext-min-interval`, default 120 s) and only
+  applied while the stove is in Room Temperature mode, so manual control
+  from the stove button or the phone app always wins.
+- The remote temperature also shows up in Home Assistant as an
+  "External temperature" sensor on the stove device.
+
+(Alternatively, with no code: an HA automation on the climate entity's
+setpoint does the same thing.)
+
 ### Notes
 
 - The bridge holds one persistent BLE connection and re-subscribes

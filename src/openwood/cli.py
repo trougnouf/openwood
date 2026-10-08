@@ -507,6 +507,34 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--topic-prefix", default="homeassistant")
     p.add_argument("--poll-interval", type=float, default=15.0)
     p.add_argument("--name", default=None, help="entity name (defaults to configured name)")
+    p.add_argument(
+        "--ext-temp-topic",
+        help="external thermostat: MQTT topic carrying a remote temperature "
+        "(e.g. a bedroom sensor's state topic)",
+    )
+    p.add_argument(
+        "--ext-target", type=float,
+        help="target temperature at the external sensor (required with "
+        "--ext-temp-topic)",
+    )
+    p.add_argument(
+        "--ext-setpoint-low", type=float, default=16.0,
+        help="stove setpoint when the remote room is too hot (default 16 = "
+        "stove minimum output)",
+    )
+    p.add_argument(
+        "--ext-setpoint-comfort", type=float,
+        help="stove setpoint when the remote room is at/below target "
+        "(default: the setpoint the stove is running at startup)",
+    )
+    p.add_argument(
+        "--ext-hysteresis", type=float, default=0.5,
+        help="hysteresis band around the target in C (default 0.5)",
+    )
+    p.add_argument(
+        "--ext-min-interval", type=float, default=120.0,
+        help="minimum seconds between stove setpoint writes (default 120)",
+    )
     p.set_defaults(func=None)  # wired in main()
 
     return ap
@@ -523,6 +551,10 @@ def main(argv=None) -> int:
 
         async def _mqtt(_args=None):
             args.address = await config.resolve_address(args.address)
+            if args.ext_temp_topic and args.ext_target is None:
+                print("error: --ext-temp-topic requires --ext-target",
+                      file=sys.stderr)
+                return 2
             if not args.name:
                 cfg = config.load()
                 args.name = (cfg.get("names") or {}).get(args.address) or "Charnwood stove"

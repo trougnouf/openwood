@@ -1,22 +1,21 @@
-"""MQTT bridge exposing the stove to Home Assistant (with discovery)."""
+"""MQTT bridge exposing the stove to Home Assistant (with discovery).
+
+Optionally acts as an external thermostat: it subscribes to any MQTT
+temperature topic (e.g. a bedroom sensor) and adjusts the stove's room
+setpoint, since the stove itself only knows the sensor in its power cable.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import time
 
 from . import protocol as P
 from .client import Stove
 
 log = logging.getLogger(__name__)
-
-
-def _sensor(dev_cls: str | None, unit: str | None = None) -> dict:
-    d = {"device_class": dev_cls} if dev_cls else {}
-    if unit:
-        d["unit_of_measurement"] = unit
-    return d
 
 
 class DiscoveryBuilder:
@@ -61,12 +60,12 @@ class DiscoveryBuilder:
             ("room_temp", "Room temperature", "temperature", "°C"),
             ("board_temp", "Board temperature", "temperature", "°C"),
             ("intensity", "Intensity", None, "%"),
-            ("valve_1", "Air valve 1 position", None, "%"),
-            ("valve_2", "Air valve 2 position", None, "%"),
-            ("valve_3", "Air valve 3 position", None, "%"),
             ("burn_cycle", "Burn cycle state", None, None),
             ("burn_cycle_name", "Burn cycle state name", None, None),
             ("error_code", "Error code", None, None),
+            ("valve_1", "Air valve 1 position", None, "%"),
+            ("valve_2", "Air valve 2 position", None, "%"),
+            ("valve_3", "Air valve 3 position", None, "%"),
         ]
         for key, label, cls, unit in specs:
             cfg = {
@@ -74,8 +73,11 @@ class DiscoveryBuilder:
                 "name": f"{self.name} {label}",
                 "unique_id": f"{self.node_id}_{key}",
                 "state_topic": self.topic("state", key),
-                **(_sensor(cls, unit) if cls or unit else {}),
             }
+            if cls:
+                cfg["device_class"] = cls
+            if unit:
+                cfg["unit_of_measurement"] = unit
             entries.append(("sensor", f"{self.node_id}_{key}", cfg))
 
         binary_specs = [
@@ -131,6 +133,24 @@ class DiscoveryBuilder:
         entries.append(("number", f"{self.node_id}_manual_level", lvl))
         return entries
 
+    def ext_temp(self) -> tuple[str, str, dict]:
+        cfg = {
+            "device": self.device,
+            "name": f"{self.name} External temperature",
+            "unique_id": f"{self.node_id}_ext_temp",
+            "state_topic": self.topic("state", "ext_temp"),
+            "device_class": "temperature",
+            "unit_of_measurement": "°C",
+        }
+        return "sensor", f"{self.node_id}_ext_temp", cfg
+
+
+def parse_float(payload: str) -> float | None:
+    try:
+        return float(payload)
+    except (TypeError, ValueError):
+        return None
+
 
 async def run_mqtt_bridge(args) -> int:
     import paho.mqtt.client as mqtt
@@ -149,6 +169,25 @@ async def run_mqtt_bridge(args) -> int:
     node = args.address.replace(":", "").lower()
     builder = DiscoveryBuilder(node, args.name)
     prefix = args.topic_prefix.rstrip("/")
+
+    # --- external thermostat configuration -----------------------------
+    ext_topic = getattr(args, "ext_temp_topic", None)
+    ext_target = float(getattr(args, "ext_target", 0) or 0)
+    ext_low = float(getattr(args, "ext_setpoint_low", 16))
+    ext_comfort = getattr(args, "ext_setpoint_comfort", None)
+    if ext_comfort is None:
+        # remember whatever setpoint the stove is normally run at
+        ext_comfort = stove.state.room_setpoint or 23.0
+    ext_comfort = float(ext_comfort)
+    ext_hyst = float(getattr(args, "ext_hysteresis", 0.5))
+    ext_min_interval = float(getattr(args, "ext_min_interval", 120))
+    ext = {"temp": None, "applied": None, "last_write": 0.0}
+    if ext_topic:
+        log.info(
+            "external thermostat: topic=%s target=%.1fC "
+            "(hot -> setpoint %.0f, ok -> setpoint %.1f, hysteresis +-%.1f)",
+            ext_topic, ext_target, ext_low, ext_comfort, ext_hyst,
+        )
 
     loop = asyncio.get_running_loop()
 
@@ -174,9 +213,15 @@ async def run_mqtt_bridge(args) -> int:
             await stove.set_alerts(payload == "ON")
 
     def on_message(_client, _userdata, msg):
+        payload = msg.payload.decode().strip()
+        if ext_topic and msg.topic == ext_topic:
+            value = parse_float(payload)
+            if value is not None:
+                ext["temp"] = value
+            return
         try:
             asyncio.run_coroutine_threadsafe(
-                handle_command(msg.topic, msg.payload.decode().strip()), loop
+                handle_command(msg.topic, payload), loop
             )
         except Exception as e:
             log.error("dispatching command failed: %s", e)
@@ -193,6 +238,8 @@ async def run_mqtt_bridge(args) -> int:
 
     # publish discovery
     entries = [builder.climate()] + builder.sensors()
+    if ext_topic:
+        entries.append(builder.ext_temp())
     for kind, obj_id, cfg in entries:
         client.publish(f"{prefix}/{kind}/{obj_id}/config", json.dumps(cfg), retain=True)
         log.debug("discovery: %s/%s", kind, obj_id)
@@ -205,6 +252,8 @@ async def run_mqtt_bridge(args) -> int:
         builder.topic("command", "alerts"),
     ]:
         client.subscribe(topic)
+    if ext_topic:
+        client.subscribe(ext_topic)
 
     def publish_state(st: P.StoveState):
         def b(v) -> str:
@@ -215,9 +264,6 @@ async def run_mqtt_bridge(args) -> int:
             "room_temp": round(st.room_temp, 1) if st.room_temp is not None else None,
             "board_temp": round(st.board_temp, 1) if st.board_temp is not None else None,
             "intensity": st.intensity,
-            "valve_1": round(st.valve_gauges.get("1", -1), 1) if st.valve_gauges.get("1") is not None else None,
-            "valve_2": round(st.valve_gauges.get("2", -1), 1) if st.valve_gauges.get("2") is not None else None,
-            "valve_3": round(st.valve_gauges.get("3", -1), 1) if st.valve_gauges.get("3") is not None else None,
             "burn_cycle": st.burn_cycle,
             "burn_cycle_name": st.burn_cycle_name,
             "error_code": st.error_code,
@@ -230,6 +276,13 @@ async def run_mqtt_bridge(args) -> int:
             "room_setpoint": st.room_setpoint,
             "manual_level": st.manual_level,
         }
+        gauges = st.valve_gauges
+        for i in ("1", "2", "3"):
+            g = gauges.get(i)
+            if g is not None:
+                topics[f"valve_{i}"] = round(g, 1)
+        if ext_topic:
+            topics["ext_temp"] = round(ext["temp"], 1) if ext["temp"] is not None else None
         for key, value in topics.items():
             if value is None:
                 continue
@@ -237,13 +290,37 @@ async def run_mqtt_bridge(args) -> int:
         hvac = {"automatic": "heat", "room_temp": "auto", "test": "test"}.get(st.mode_name, "heat")
         client.publish(builder.topic("state", "hvac_mode"), hvac, retain=True)
 
+    async def ext_thermostat_step():
+        """Hysteresis control: adjust the stove setpoint from ext temperature."""
+        if not ext_topic or ext["temp"] is None:
+            return
+        if stove.state.mode != P.MODE_ROOM_TEMP:
+            return  # don't fight Automatic/Test/other control
+        now = time.monotonic()
+        if now - ext["last_write"] < ext_min_interval:
+            return
+        t = ext["temp"]
+        desired = None
+        if t >= ext_target + ext_hyst:
+            desired = ext_low
+        elif t <= ext_target - ext_hyst:
+            desired = ext_comfort
+        if desired is not None and desired != ext["applied"]:
+            await stove.set_room_setpoint(desired)
+            ext["applied"] = desired
+            ext["last_write"] = now
+            log.info(
+                "external thermostat: %.1f C (target %.1f) -> setpoint %.1f",
+                t, ext_target, desired,
+            )
+
     log.info(
-        "bridge running: stove=%s mqtt=%s:%s (push%s, fallback poll %ss)",
+        "bridge running: stove=%s mqtt=%s:%s (push%s, fallback poll %ss%s)",
         args.address, args.host, args.port,
         " on" if live else " off", poll,
+        ", ext thermostat" if ext_topic else "",
     )
     last_publish = 0.0
-    import time as _time
 
     def state_snapshot(st):
         return tuple(sorted((k, str(v)) for k, v in st.to_dict().items()))
@@ -260,9 +337,10 @@ async def run_mqtt_bridge(args) -> int:
                 )
                 if needs_poll:
                     await stove.read_all()
+                await ext_thermostat_step()
                 st = stove.state
                 snap = state_snapshot(st)
-                now = _time.monotonic()
+                now = time.monotonic()
                 if snap != last_snapshot and now - last_publish >= 1.0:
                     publish_state(st)
                     last_snapshot = snap
