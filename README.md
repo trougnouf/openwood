@@ -183,10 +183,18 @@ allow_anonymous false
 password_file /etc/mosquitto/passwd
 ```
 
-Two gotchas: `mosquitto_passwd` leaves the passwd file unreadable for the
-`mosquitto` user (`sudo chown mosquitto:mosquitto /etc/mosquitto/passwd
-&& sudo chmod 640 /etc/mosquitto/passwd`), and if the broker failed
-repeatedly, `sudo systemctl reset-failed mosquitto` before restarting.
+Three gotchas:
+- `mosquitto_passwd` leaves the passwd file unreadable for the
+  `mosquitto` user: `sudo chown mosquitto:mosquitto /etc/mosquitto/passwd
+  && sudo chmod 640 /etc/mosquitto/passwd`
+- a `listener 1883 172.17.0.1` line makes the broker depend on docker:
+  at boot mosquitto starts before docker creates docker0 and dies with
+  "Cannot assign requested address" (then start-limit-hit). Order it
+  after docker with a drop-in (`sudo systemctl edit mosquitto`):
+  `[Unit]` / `After=docker.service` / `Wants=docker.service`
+- if the broker failed repeatedly, `sudo systemctl reset-failed
+  mosquitto` before restarting
+
 A containerized HA connects to `172.17.0.1`, not `127.0.0.1` (unless it
 runs with host networking).
 
