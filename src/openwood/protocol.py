@@ -504,6 +504,13 @@ class StoveState:
         self.manual_level = st.manual_level
         self.alerts = st.alerts
         self.special_mode = st.special_mode
+        if st.valve_1_raw is not None or st.valve_2_raw is not None \
+                or st.valve_3_raw is not None:
+            self.valves = {
+                "1": st.valve_1_raw,
+                "2": st.valve_2_raw,
+                "3": st.valve_3_raw,
+            }
 
     def to_dict(self) -> dict:
         d = {k: v for k, v in vars(self).items() if v is not None}
