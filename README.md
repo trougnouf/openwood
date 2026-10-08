@@ -164,7 +164,7 @@ Home Assistant needs a broker. On Arch:
 
 ```sh
 sudo pacman -S mosquitto
-sudo systemctl edit --full mosquitto    # or edit /etc/mosquitto/mosquitto.conf:
+sudoedit /etc/mosquitto/mosquitto.conf   # the broker config (not the systemd unit)
 ```
 
 ```conf
