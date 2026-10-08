@@ -15,6 +15,13 @@ from . import protocol as P
 from .client import Stove
 
 
+def float_or_none(v: str) -> float | None:
+    """argparse type: empty string -> None (for env-file-driven flags)."""
+    if v is None or not v.strip():
+        return None
+    return float(v)
+
+
 def _fmt_state(st: P.StoveState, verbose: bool = False) -> str:
     lines = []
     if st.mode == P.MODE_AUTOMATIC:
@@ -513,26 +520,26 @@ def build_parser() -> argparse.ArgumentParser:
         "(e.g. a bedroom sensor's state topic)",
     )
     p.add_argument(
-        "--ext-target", type=float,
+        "--ext-target", type=float_or_none,
         help="target temperature at the external sensor (required with "
         "--ext-temp-topic)",
     )
     p.add_argument(
-        "--ext-setpoint-low", type=float, default=16.0,
+        "--ext-setpoint-low", type=float_or_none, default=16.0,
         help="stove setpoint when the remote room is too hot (default 16 = "
         "stove minimum output)",
     )
     p.add_argument(
-        "--ext-setpoint-comfort", type=float,
+        "--ext-setpoint-comfort", type=float_or_none,
         help="stove setpoint when the remote room is at/below target "
         "(default: the setpoint the stove is running at startup)",
     )
     p.add_argument(
-        "--ext-hysteresis", type=float, default=0.5,
+        "--ext-hysteresis", type=float_or_none, default=0.5,
         help="hysteresis band around the target in C (default 0.5)",
     )
     p.add_argument(
-        "--ext-min-interval", type=float, default=120.0,
+        "--ext-min-interval", type=float_or_none, default=120.0,
         help="minimum seconds between stove setpoint writes (default 120)",
     )
     p.set_defaults(func=None)  # wired in main()

@@ -4,6 +4,23 @@
 The BLE protocol was reverse engineered from the official Charnwood-E Android
 app (v2.0.31) — see [PROTOCOL.md](PROTOCOL.md) for the full documentation.
 
+## Disclaimer
+
+This is an **unofficial, independent** project. It is not affiliated
+with, endorsed by, or supported by Charnwood (J Grove & Sons Ltd) in any
+way. "Charnwood" and product names are trademarks of their respective
+owner and are used here only to describe compatibility.
+
+The BLE protocol was reverse engineered from the official Android app
+for interoperability with your own stove. The software is provided
+**as is, without warranty of any kind** — you use it entirely at your
+own risk. A stove is a real fire in your home: while the stove's own
+safety systems remain in control at all times, an unofficial controller
+can change its behaviour. Always attend a lit stove as the manufacturer
+advises, and never rely on this software as a safety device.
+
+## What you get
+
 Features (everything the Android app does):
 
 - Scan for and pair with the stove over Bluetooth LE
@@ -22,14 +39,40 @@ Features (everything the Android app does):
 
 ## Install
 
+Three supported routes, depending on your setup:
+
+### Arch Linux (works with or without Home Assistant)
+
+The `openwood-git` package (PKGBUILD in `packaging/aur/openwood-git/`)
+installs the CLI system-wide plus an optional systemd service for the
+MQTT bridge:
+
 ```sh
-cd /orb/Dev/openwood
-python3 -m venv .venv
-.venv/bin/pip install -e ".[mqtt]"
+# from the AUR, or build from the PKGBUILD in this repository:
+makepkg -si
+openwood scan    # then `openwood use` to remember the stove
 ```
 
-Requires BlueZ (present on any normal Linux desktop) and a BLE-capable
-Bluetooth adapter.
+Home Assistant is optional — the CLI works standalone. If you do run
+HA, continue to the [Home Assistant](#home-assistant) section.
+
+### Any distro, from source
+
+```sh
+cd openwood
+python3 -m venv .venv
+.venv/bin/pip install -e ".[mqtt]"
+.venv/bin/openwood scan
+```
+
+Requires BlueZ (any normal desktop Linux) and a BLE-capable Bluetooth
+adapter.
+
+### Home Assistant
+
+See the [Home Assistant](#home-assistant) section for the MQTT bridge;
+it needs a broker (mosquitto) but runs independently of how openwood
+itself was installed.
 
 ## Pairing (one time)
 
@@ -181,7 +224,8 @@ makepkg -si   # inside your AUR clone, or use your AUR helper
 # pick the stove once (writes /etc/openwood/config.json):
 sudo env OPENWOOD_CONFIG=/etc/openwood/config.json openwood use
 
-# edit /etc/openwood/mqtt.env (MQTT_USER/MQTT_PASSWORD, STOVE_NAME), then:
+# edit /etc/openwood/mqtt.env (MQTT_USER/MQTT_PASSWORD, STOVE_NAME,
+# and EXT_* if you want the external thermostat), then:
 sudo systemctl enable --now openwood-mqtt
 journalctl -u openwood-mqtt -f
 ```

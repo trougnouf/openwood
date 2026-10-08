@@ -219,3 +219,9 @@ intensity shown on the same screen is register 01 (0–100%).
   (readingdt, stoveid, roomtemp, stovetemp, doorevent, stovestate,
   lightlevel, boardtemp) and charts them; the stove itself only provides
   the live snapshot and a minutes counter.
+
+---
+*This protocol documentation was produced by reverse engineering the
+official Charnwood-E Android app for interoperability purposes. It is
+an unofficial, independent description; Charnwood has not endorsed or
+reviewed it. No warranty — verify against your own stove.*
