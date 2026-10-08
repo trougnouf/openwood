@@ -137,6 +137,17 @@ def get_ip(address: str) -> str | None:
     return (load().get("ips") or {}).get(address)
 
 
+def forget_ip(address: str) -> None:
+    """Best-effort: drop a stale stored stove IP (e.g. WiFi deprovisioned)."""
+    cfg = load()
+    if address in (cfg.get("ips") or {}):
+        del cfg["ips"][address]
+        try:
+            save(cfg)
+        except OSError:
+            pass
+
+
 def get_default() -> tuple[str | None, str | None]:
     cfg = load()
     addr = cfg.get("default_address")

@@ -274,6 +274,22 @@ async def run_mqtt_bridge(args) -> int:
         client = mqtt.Client(client_id=f"openwood-{node}")
     if args.user:
         client.username_pw_set(args.user, args.password)
+
+    mqtt_rc = {"code": None}
+
+    def on_connect(_c, _u, _flags, rc, _props=None):
+        code = rc.value if hasattr(rc, "value") else rc
+        mqtt_rc["code"] = int(code)
+        if code == 0:
+            log.info("MQTT connected to %s:%s", args.host, args.port)
+        else:
+            log.critical(
+                "MQTT broker refused the connection (code %s): check "
+                "--host/--user/--password (broker users are created with "
+                "mosquitto_passwd)", code,
+            )
+
+    client.on_connect = on_connect
     client.on_message = on_message
     client.connect(args.host, args.port, keepalive=60)
     client.loop_start()
@@ -372,6 +388,8 @@ async def run_mqtt_bridge(args) -> int:
     wifi_failures = 0
     try:
         while True:
+            if mqtt_rc["code"] is not None and mqtt_rc["code"] != 0:
+                return 2
             try:
                 if wifi_mode:
                     st = await Stove.read_wifi(ip)
@@ -406,6 +424,10 @@ async def run_mqtt_bridge(args) -> int:
                             st = await stove.read_all(include_meta=True)
                             if st.ip_address:
                                 config.remember_ip(address, st.ip_address)
+                            elif config.get_ip(address):
+                                config.forget_ip(address)
+                                log.info("stove reports no WiFi IP; "
+                                         "forgot the stale one")
                             ble_stream = True
                         except Exception as e2:
                             log.error("BLE fallback connect failed: %s", e2)

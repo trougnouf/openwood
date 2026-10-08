@@ -228,6 +228,10 @@ async def cmd_status(args) -> int:
         if st.ip_address:
             config.remember_ip(address, st.ip_address)
             print(f"# stove IP remembered: {st.ip_address}", file=sys.stderr)
+        elif config.get_ip(address):
+            config.forget_ip(address)
+            print("# stove reports no WiFi IP; forgot the stale one "
+                  "(re-provision with `openwood wifi set`)", file=sys.stderr)
         if args.json:
             print(json.dumps(st.to_dict(), indent=2))
         else:
