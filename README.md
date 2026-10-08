@@ -288,11 +288,13 @@ setpoint does the same thing.)
 
 ### Notes
 
-- The bridge holds one persistent BLE connection and re-subscribes
-  automatically after radio drops; the stove allows up to 3 connected
-  devices (bridge + phone app is fine).
-- State updates come from the stove's change-push notifications (~5 s);
-  polling is only a fallback. HA automations can trigger on door open,
+- By default the bridge polls status over WiFi (`--status-source auto`;
+  run `openwood status --source ble` once to capture the stove IP) and
+  opens a short BLE link only when a control command arrives; if WiFi
+  fails it falls back to the persistent BLE connection with the stove's
+  change-push notifications (~5 s updates). No Bluetooth adapter
+  interference in the common case.
+- HA automations can trigger on door open,
   check fuel (reload due), overfire warning, or errors.
 - The stove thermostat uses the sensor on its power cable, so HA's
   room-temperature entity may read warmer than elsewhere in the room.
