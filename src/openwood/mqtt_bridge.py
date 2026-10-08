@@ -15,6 +15,7 @@ import json
 import logging
 import time
 
+from . import config
 from . import protocol as P
 from .client import Stove
 
@@ -158,17 +159,34 @@ def parse_float(payload: str) -> float | None:
 async def run_mqtt_bridge(args) -> int:
     import paho.mqtt.client as mqtt
 
-    stove = Stove(args.address)
-    await stove.connect()
-    try:
-        live = await stove.subscribe_notifications()
-    except Exception as e:
-        log.warning("notifications failed (%s); using polling only", e)
-        live = False
-    log.info("notification stream: %s", "active" if live else "off (polling)")
-    # seed the full state once; pushes only carry changed registers
-    await stove.read_all()
+    address = args.address
+    source = getattr(args, "status_source", "auto")
+    ip = config.get_ip(address) if source in ("auto", "wifi") else None
+    if source == "wifi" and not ip:
+        log.error("no stored stove IP; run `openwood status --source ble` once")
+        return 2
+
     poll = float(args.poll_interval)
+    wifi_mode = ip is not None
+    stove = Stove(address)
+    ble_stream = False
+
+    if wifi_mode:
+        log.info("status source: WiFi http://%s/get-reading-set "
+                 "(control commands open a short BLE link)", ip)
+    else:
+        await stove.connect()
+        try:
+            live = await stove.subscribe_notifications()
+        except Exception as e:
+            log.warning("notifications failed (%s); using polling only", e)
+            live = False
+        log.info("notification stream: %s", "active" if live else "off (polling)")
+        # seed the full state once; pushes only carry changed registers
+        st = await stove.read_all(include_meta=True)
+        if st.ip_address:
+            config.remember_ip(address, st.ip_address)
+        ble_stream = True
     node = args.address.replace(":", "").lower()
     builder = DiscoveryBuilder(node, args.name)
     prefix = args.topic_prefix.rstrip("/")
@@ -178,8 +196,13 @@ async def run_mqtt_bridge(args) -> int:
     ext_target = float(getattr(args, "ext_target", 0) or 0)
     ext_low = float(getattr(args, "ext_setpoint_low", 16))
     ext_comfort = getattr(args, "ext_setpoint_comfort", None)
-    if ext_comfort is None:
+    if ext_comfort is None and wifi_mode:
         # remember whatever setpoint the stove is normally run at
+        try:
+            ext_comfort = (await Stove.read_wifi(ip)).room_setpoint or 23.0
+        except Exception:
+            ext_comfort = 23.0
+    elif ext_comfort is None:
         ext_comfort = stove.state.room_setpoint or 23.0
     ext_comfort = float(ext_comfort)
     ext_hyst = float(getattr(args, "ext_hysteresis", 0.5))
@@ -194,26 +217,42 @@ async def run_mqtt_bridge(args) -> int:
 
     loop = asyncio.get_running_loop()
 
+    cmd_lock = asyncio.Lock()
+
+    async def with_stove(fn):
+        """Run a control coroutine: on the persistent link, or a short
+        on-demand BLE connection when serving status over WiFi."""
+        if ble_stream:
+            await fn(stove)
+        else:
+            async with cmd_lock:
+                async with Stove(address) as cmd_stove:
+                    await fn(cmd_stove)
+
     async def handle_command(payload_topic: str, payload: str):
         log.info("command: %s <- %s", payload_topic, payload)
         if payload_topic.endswith("hvac_mode"):
             if payload == "off":
                 # Charnwood has no "off"; use intensity 1 (smallest output)
-                await stove.set_intensity(1)
+                await with_stove(lambda s: s.set_intensity(1))
             elif payload == "test":
-                await stove.set_test_air(50)
+                await with_stove(lambda s: s.set_test_air(50))
             elif payload == "auto":
-                await stove.set_mode(P.MODE_ROOM_TEMP)
+                await with_stove(lambda s: s.set_mode(P.MODE_ROOM_TEMP))
             else:  # heat -> Automatic mode at current intensity
-                await stove.set_mode(P.MODE_AUTOMATIC)
+                await with_stove(lambda s: s.set_mode(P.MODE_AUTOMATIC))
         elif payload_topic.endswith("room_setpoint"):
-            await stove.set_room_setpoint(float(payload))
+            setp = float(payload)
+            await with_stove(lambda s: s.set_room_setpoint(setp))
         elif payload_topic.endswith("manual_level"):
-            await stove.set_manual_level(int(payload))
+            level = int(payload)
+            await with_stove(lambda s: s.set_manual_level(level))
         elif payload_topic.endswith("extended_burn"):
-            await stove.set_extended_burn(payload == "ON")
+            on = payload == "ON"
+            await with_stove(lambda s: s.set_extended_burn(on))
         elif payload_topic.endswith("alerts"):
-            await stove.set_alerts(payload == "ON")
+            on = payload == "ON"
+            await with_stove(lambda s: s.set_alerts(on))
 
     def on_message(_client, _userdata, msg):
         payload = msg.payload.decode().strip()
@@ -293,11 +332,11 @@ async def run_mqtt_bridge(args) -> int:
         hvac = {"automatic": "heat", "room_temp": "auto", "test": "test"}.get(st.mode_name, "heat")
         client.publish(builder.topic("state", "hvac_mode"), hvac, retain=True)
 
-    async def ext_thermostat_step():
+    async def ext_thermostat_step(st):
         """Hysteresis control: adjust the stove setpoint from ext temperature."""
         if not ext_topic or ext["temp"] is None:
             return
-        if stove.state.mode != P.MODE_ROOM_TEMP:
+        if st.mode != P.MODE_ROOM_TEMP:
             return  # don't fight Automatic/Test/other control
         now = time.monotonic()
         if now - ext["last_write"] < ext_min_interval:
@@ -309,7 +348,7 @@ async def run_mqtt_bridge(args) -> int:
         elif t <= ext_target - ext_hyst:
             desired = ext_comfort
         if desired is not None and desired != ext["applied"]:
-            await stove.set_room_setpoint(desired)
+            await with_stove(lambda s: s.set_room_setpoint(desired))
             ext["applied"] = desired
             ext["last_write"] = now
             log.info(
@@ -318,9 +357,10 @@ async def run_mqtt_bridge(args) -> int:
             )
 
     log.info(
-        "bridge running: stove=%s mqtt=%s:%s (push%s, fallback poll %ss%s)",
-        args.address, args.host, args.port,
-        " on" if live else " off", poll,
+        "bridge running: stove=%s mqtt=%s:%s (source=%s, poll %ss%s)",
+        address, args.host, args.port,
+        f"wifi {ip}" if wifi_mode else "ble",
+        poll,
         ", ext thermostat" if ext_topic else "",
     )
     last_publish = 0.0
@@ -329,19 +369,24 @@ async def run_mqtt_bridge(args) -> int:
         return tuple(sorted((k, str(v)) for k, v in st.to_dict().items()))
 
     last_snapshot = None
+    wifi_failures = 0
     try:
         while True:
             try:
-                age = stove.push_age()
-                needs_poll = (
-                    not stove.notifications_active
-                    or age is None
-                    or age > max(poll, 30.0)
-                )
-                if needs_poll:
-                    await stove.read_all()
-                await ext_thermostat_step()
-                st = stove.state
+                if wifi_mode:
+                    st = await Stove.read_wifi(ip)
+                    wifi_failures = 0
+                else:
+                    age = stove.push_age()
+                    needs_poll = (
+                        not stove.notifications_active
+                        or age is None
+                        or age > max(poll, 30.0)
+                    )
+                    if needs_poll:
+                        await stove.read_all()
+                    st = stove.state
+                await ext_thermostat_step(st)
                 snap = state_snapshot(st)
                 now = time.monotonic()
                 if snap != last_snapshot and now - last_publish >= 1.0:
@@ -349,6 +394,25 @@ async def run_mqtt_bridge(args) -> int:
                     last_snapshot = snap
                     last_publish = now
             except Exception as e:
+                if wifi_mode:
+                    wifi_failures += 1
+                    log.warning("WiFi status failed (%s); %d/5", e, wifi_failures)
+                    if wifi_failures >= 5:
+                        log.warning("WiFi unreliable; switching to the BLE stream")
+                        wifi_mode = False
+                        try:
+                            await stove.connect()
+                            await stove.subscribe_notifications()
+                            st = await stove.read_all(include_meta=True)
+                            if st.ip_address:
+                                config.remember_ip(address, st.ip_address)
+                            ble_stream = True
+                        except Exception as e2:
+                            log.error("BLE fallback connect failed: %s", e2)
+                            await asyncio.sleep(10)
+                        continue
+                    await asyncio.sleep(poll)
+                    continue
                 log.warning("update failed (%s); reconnecting", e)
                 try:
                     await stove.disconnect()
@@ -360,7 +424,8 @@ async def run_mqtt_bridge(args) -> int:
                     await stove.subscribe_notifications()
                 except Exception as e2:
                     log.error("reconnect failed: %s", e2)
-            await asyncio.sleep(1 if stove.notifications_active else poll)
+            await asyncio.sleep(poll if wifi_mode else
+                                (1 if stove.notifications_active else poll))
     finally:
         client.loop_stop()
         client.disconnect()

@@ -41,6 +41,31 @@ class Stove:
         """Seconds since the last notification push (None if never)."""
         return None if self.last_push is None else time.monotonic() - self.last_push
 
+    @staticmethod
+    async def read_wifi(ip: str, timeout: float = 2.5) -> P.StoveState:
+        """Fetch the packed status snapshot over WiFi (~50 ms on LAN).
+
+        Read-only: the stove serves GET /get-reading-set; control always
+        requires BLE.
+        """
+        def fetch() -> bytes:
+            import urllib.request
+
+            with urllib.request.urlopen(
+                f"http://{ip}/get-reading-set", timeout=timeout
+            ) as r:
+                return r.read()
+
+        raw = (await asyncio.to_thread(fetch)).decode("ascii", "replace").strip()
+        packed = P.parse_reading_set(raw)
+        if packed is None:
+            raise ConnectionError(
+                f"unexpected reading-set payload from {ip} (len {len(raw)})"
+            )
+        st = P.StoveState()
+        st.apply_packed(packed)
+        return st
+
     # -- lifecycle ---------------------------------------------------------
 
     @staticmethod

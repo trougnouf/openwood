@@ -192,12 +192,48 @@ async def cmd_forget(args) -> int:
 
 
 async def cmd_status(args) -> int:
-    async with await _stove(args) as stove:
+    address = await config.resolve_address(getattr(args, "address", None))
+    src = getattr(args, "source", "auto")
+
+    if src in ("auto", "wifi"):
+        ip = config.get_ip(address)
+        if src == "wifi" and not ip:
+            print(
+                "error: no stored stove IP; run `openwood status --source ble` "
+                "once (or `openwood wifi show`) to capture it",
+                file=sys.stderr,
+            )
+            return 2
+        if ip:
+            try:
+                st = await Stove.read_wifi(ip)
+                print(f"# status via WiFi http://{ip}/get-reading-set",
+                      file=sys.stderr)
+                if args.json:
+                    print(json.dumps(st.to_dict(), indent=2))
+                else:
+                    print(_fmt_state(st, verbose=False))
+                return 0
+            except Exception as e:
+                if src == "wifi":
+                    print(f"error: WiFi status failed: {e}", file=sys.stderr)
+                    return 2
+                print(f"# WiFi status failed ({e}); falling back to BLE",
+                      file=sys.stderr)
+
+    stove = Stove(address)
+    await stove.connect()
+    try:
         st = await stove.read_all(include_meta=True)
+        if st.ip_address:
+            config.remember_ip(address, st.ip_address)
+            print(f"# stove IP remembered: {st.ip_address}", file=sys.stderr)
         if args.json:
             print(json.dumps(st.to_dict(), indent=2))
         else:
             print(_fmt_state(st, verbose=True))
+    finally:
+        await stove.disconnect()
     return 0
 
 
@@ -208,7 +244,21 @@ async def cmd_watch(args) -> int:
             "timestamp,stove_temp,room_temp,board_temp,room_setpoint,intensity,"
             "mode,manual_level,burn_cycle,door_open,burning,extended_burn,check_fuel,alerts,valve1,valve2,valve3,error\n"
         )
-    async with await _stove(args) as stove:
+    address = await config.resolve_address(getattr(args, "address", None))
+    src = getattr(args, "source", "auto")
+    ip = config.get_ip(address) if src in ("auto", "wifi") else None
+    if src == "wifi" and not ip:
+        print("error: no stored stove IP; run `openwood status --source ble` "
+              "once to capture it", file=sys.stderr)
+        return 2
+
+    wifi_failures = 0
+    use_wifi = ip is not None
+    stove = Stove(address)
+    connected = False
+    if not use_wifi:
+        await stove.connect()
+        connected = True
         if args.notify:
             try:
                 await stove.subscribe_notifications()
@@ -217,17 +267,36 @@ async def cmd_watch(args) -> int:
                       file=sys.stderr)
         # seed the full state once; pushes only carry changed registers
         await stove.read_all()
-        n = 0
+    n = 0
+    try:
         while args.count == 0 or n < args.count:
             try:
-                age = stove.push_age()
-                if not (args.notify and stove.notifications_active and
-                        (age is None or age < 30)):
-                    # polling mode, or the push stream has gone quiet
-                    await stove.read_all()
-                st = stove.state
+                if use_wifi:
+                    st = await Stove.read_wifi(ip)
+                    wifi_failures = 0
+                else:
+                    age = stove.push_age()
+                    if not (args.notify and stove.notifications_active and
+                            (age is None or age < 30)):
+                        # polling mode, or the push stream has gone quiet
+                        await stove.read_all()
+                    st = stove.state
             except Exception as e:
                 print(f"[{time.strftime('%H:%M:%S')}] read failed: {e}", file=sys.stderr)
+                if use_wifi:
+                    wifi_failures += 1
+                    if wifi_failures >= 5:
+                        print("# WiFi unreliable; switching to BLE", file=sys.stderr)
+                        use_wifi = False
+                        try:
+                            await stove.connect()
+                            connected = True
+                            await stove.read_all()
+                        except Exception as e2:
+                            print(f"BLE connect failed: {e2}", file=sys.stderr)
+                        continue
+                    await asyncio.sleep(min(args.interval, 5))
+                    continue
                 try:
                     await stove.connect()
                 except Exception as e2:
@@ -247,6 +316,9 @@ async def cmd_watch(args) -> int:
                     )
             n += 1
             await asyncio.sleep(args.interval)
+    finally:
+        if connected:
+            await stove.disconnect()
     return 0
 
 
@@ -428,12 +500,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="read full stove status")
     _add_address(p)
     p.add_argument("--json", action="store_true")
+    p.add_argument("--source", choices=["auto", "wifi", "ble"], default="auto",
+                   help="status transport: auto = WiFi if known, else BLE")
     p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("watch", help="poll status continuously")
     _add_address(p)
     p.add_argument("--notify", action="store_true",
-                   help="use BLE push notifications instead of polling")
+                   help="BLE mode: subscribe to change pushes instead of polling")
+    p.add_argument("--source", choices=["auto", "wifi", "ble"], default="auto",
+                   help="status transport: auto = WiFi if known, else BLE")
     p.add_argument("--interval", type=float, default=10.0)
     p.add_argument("--count", type=int, default=0, help="0 = forever")
     p.add_argument("--log", help="CSV file to append readings to")
@@ -518,6 +594,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--poll-interval", type=float, default=15.0)
     p.add_argument("--name", default=None, help="entity name (defaults to configured name)")
     p.add_argument(
+        "--status-source", type=str, default="auto",
+        help="status transport: auto = WiFi if the stove IP is known, else "
+        "the BLE notification stream. Control always uses BLE (a short "
+        "on-demand link in WiFi mode).",
+    )
+    p.add_argument(
         "--ext-temp-topic",
         help="external thermostat: MQTT topic carrying a remote temperature "
         "(e.g. a bedroom sensor's state topic)",
@@ -561,6 +643,12 @@ def main(argv=None) -> int:
 
         async def _mqtt(_args=None):
             args.address = await config.resolve_address(args.address)
+            if not (args.status_source or "auto").strip():
+                args.status_source = "auto"
+            if args.status_source not in ("auto", "wifi", "ble"):
+                print(f"error: invalid --status-source: {args.status_source!r}",
+                      file=sys.stderr)
+                return 2
             if args.ext_temp_topic and args.ext_target is None:
                 print("error: --ext-temp-topic requires --ext-target",
                       file=sys.stderr)

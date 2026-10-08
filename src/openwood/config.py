@@ -118,6 +118,25 @@ def auto_save_default(address: str, name: str | None = None) -> bool:
         return False
 
 
+def remember_ip(address: str, ip: str | None) -> None:
+    """Best-effort: remember the stove's WiFi IP (from BLE meta reads)."""
+    if not ip:
+        return
+    cfg = load()
+    ips = cfg.get("ips") or {}
+    if ips.get(address) != ip:
+        ips[address] = ip
+        cfg["ips"] = ips
+        try:
+            save(cfg)
+        except OSError:
+            pass
+
+
+def get_ip(address: str) -> str | None:
+    return (load().get("ips") or {}).get(address)
+
+
 def get_default() -> tuple[str | None, str | None]:
     cfg = load()
     addr = cfg.get("default_address")
