@@ -225,3 +225,6 @@ intensity shown on the same screen is register 01 (0–100%).
 official Charnwood-E Android app for interoperability purposes. It is
 an unofficial, independent description; Charnwood has not endorsed or
 reviewed it. No warranty — verify against your own stove.*
+
+*Documentation licensed GPL-3.0-or-later (see LICENSE). Does not grant
+any rights over Charnwood's app or firmware.*

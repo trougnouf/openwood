@@ -1,5 +1,8 @@
 """bleak-based client for the Charnwood E stove."""
 
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Benoit Brummer
+
 from __future__ import annotations
 
 import asyncio

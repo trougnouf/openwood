@@ -3,6 +3,9 @@
 Reverse engineered from the Charnwood-E Android app v2.0.31 (see PROTOCOL.md).
 """
 
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Benoit Brummer
+
 from __future__ import annotations
 
 import struct

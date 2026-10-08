@@ -5,6 +5,9 @@ temperature topic (e.g. a bedroom sensor) and adjusts the stove's room
 setpoint, since the stove itself only knows the sensor in its power cable.
 """
 
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Benoit Brummer
+
 from __future__ import annotations
 
 import asyncio

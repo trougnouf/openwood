@@ -19,6 +19,12 @@ safety systems remain in control at all times, an unofficial controller
 can change its behaviour. Always attend a lit stove as the manufacturer
 advises, and never rely on this software as a safety device.
 
+## License
+
+`GPL-3.0-or-later` — see [LICENSE](LICENSE). This covers the openwood code
+and documentation; it obviously does not grant any rights over Charnwood's
+app, firmware, or trademarks.
+
 ## What you get
 
 Features (everything the Android app does):
