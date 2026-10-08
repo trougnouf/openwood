@@ -4,7 +4,7 @@
 #   makepkg --printsrcinfo > .SRCINFO
 
 pkgname=openwood-git
-pkgver=r12.4b8228e
+pkgver=r15.1029edc
 pkgrel=1
 pkgdesc="Control a Charnwood E-series stove (Aire 300) over BLE: CLI + MQTT bridge with Home Assistant discovery"
 arch=(any)
