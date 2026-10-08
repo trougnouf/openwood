@@ -22,7 +22,7 @@ Environment=EXT_SETPOINT_COMFORT=
 Environment=EXT_HYSTERESIS=
 Environment=EXT_MIN_INTERVAL=
 EnvironmentFile=/etc/openwood/mqtt.env
-ExecStart=/usr/bin/openwood mqtt --status-source ${STATUS_SOURCE} --host ${MQTT_HOST} --user ${MQTT_USER} --password ${MQTT_PASSWORD} --name ${STOVE_NAME} --poll-interval ${MQTT_POLL_INTERVAL:-20} --ext-temp-topic ${EXT_TEMP_TOPIC} --ext-target ${EXT_TARGET} --ext-setpoint-low ${EXT_SETPOINT_LOW} --ext-setpoint-comfort ${EXT_SETPOINT_COMFORT} --ext-hysteresis ${EXT_HYSTERESIS} --ext-min-interval ${EXT_MIN_INTERVAL}
+ExecStart=/usr/bin/openwood mqtt --status-source ${STATUS_SOURCE} --host ${MQTT_HOST} --user ${MQTT_USER} --password ${MQTT_PASSWORD} --name ${STOVE_NAME} --poll-interval ${MQTT_POLL_INTERVAL} --ext-temp-topic ${EXT_TEMP_TOPIC} --ext-target ${EXT_TARGET} --ext-setpoint-low ${EXT_SETPOINT_LOW} --ext-setpoint-comfort ${EXT_SETPOINT_COMFORT} --ext-hysteresis ${EXT_HYSTERESIS} --ext-min-interval ${EXT_MIN_INTERVAL}
 Restart=always
 RestartSec=10
 
