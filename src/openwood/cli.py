@@ -521,7 +521,7 @@ def main(argv=None) -> int:
     if args.command == "mqtt":
         from .mqtt_bridge import run_mqtt_bridge
 
-        async def _mqtt():
+        async def _mqtt(_args=None):
             args.address = await config.resolve_address(args.address)
             if not args.name:
                 cfg = config.load()

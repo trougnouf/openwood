@@ -105,48 +105,112 @@ machine, where `$HOME` is read-only — openwood falls back to
 
 ## Home Assistant
 
-Run the MQTT bridge on any always-on machine within Bluetooth range of the
-stove (it can be the HA box itself if it has Bluetooth, or a small always-on
-Linux box/NUC):
+The bridge publishes the stove to MQTT with HA auto-discovery. It was
+verified end to end against a local broker with a live stove: 21 entities
+discovered, live state every ~5 s from the stove's change-push stream.
+
+### 1. Install an MQTT broker
+
+Home Assistant needs a broker. On Arch:
+
+```sh
+sudo pacman -S mosquitto
+sudo systemctl edit --full mosquitto    # or edit /etc/mosquitto/mosquitto.conf:
+```
+
+```conf
+listener 1883 0.0.0.0
+allow_anonymous false
+password_file /etc/mosquitto/passwd
+```
+
+```sh
+sudo mosquitto_passwd -c /etc/mosquitto/passwd homeassistant   # HA's user
+sudo mosquitto_passwd /etc/mosquitto/passwd openwood           # bridge's user
+sudo systemctl enable --now mosquitto
+```
+
+(On HAOS, use the "Mosquitto broker" add-on instead and skip this step.)
+
+### 2. Add the MQTT integration in Home Assistant
+
+Settings → Devices & Services → Add Integration → **MQTT**. Point it at the
+broker (from HA on the same machine: `127.0.0.1`, port 1883) with the
+`homeassistant` credentials. Enable "MQTT discovery" if asked (it's on by
+default).
+
+### 3. Test the bridge manually
 
 ```sh
 .venv/bin/openwood mqtt \
-    --host homeassistant.local --user mqttuser --password mqttpass \
-    --name "Charnwood Aire 300" --poll-interval 30
+    --host 127.0.0.1 --user openwood --password <bridge password> \
+    --name "Charnwood Aire 300" --poll-interval 20
 ```
 
-The bridge keeps a persistent BLE connection and uses the stove's
-change-push notifications (updates roughly every 5 s) with polling as
-fallback. The stove supports up to 3 connected devices, so the bridge and
-your phone app can both stay connected.
+The stove must already be paired and set as default (`openwood use`).
+Within ~30 s, the device "Charnwood Aire 300" appears in HA under
+Settings → Devices & Services → MQTT, with:
 
-Entities appear in Home Assistant automatically via MQTT discovery:
+| Entity | Type | Notes |
+|---|---|---|
+| Charnwood Aire 300 | climate | modes: heat=Automatic, auto=Room Temp, test=Test; setpoint 16-30 C |
+| Stove/Room/Board temperature | sensors | C |
+| Intensity | sensor | live burn output % |
+| Air valve 1/2/3 position | sensors | gauge %, -1 = fault |
+| Burn cycle state (+ name) | sensors | e.g. "STEADY STATE EFFICIENT E" |
+| Error code / Error | sensor + binary | |
+| Door open, Burning, Check fuel, Overfire, Extended burn | binary sensors | |
+| Extended burn, Reload alerts | switches | |
+| Manual level | number | burn intensity 1-5 |
 
-- **Climate** entity (modes: heat=manual, auto, boost; setpoint 16–30 °C,
-  current temperature from the room sensor)
-- Sensors: stove temp, room temp, board temp, light level, burn cycle,
-  error code
-- Binary sensors: door open, burning, check fuel, overfire warning,
-  overnight, error
-- Switches: overnight burn, fuel alert
-- Number: manual level (1–5)
+Note: "off" on the climate card is not a real stove mode - it sets
+Automatic intensity 1 (smallest output), same as the app's minimum.
 
-For a systemd service, drop this in `/etc/systemd/system/openwood-mqtt.service`
-and adjust paths/credentials:
+You can also verify with mosquitto: `mosquitto_sub -t '#' -v`.
+
+### 4. Run it as a service
+
+`/etc/systemd/system/openwood-mqtt.service` (adjust paths and credentials):
 
 ```ini
 [Unit]
-Description=Charnwood stove MQTT bridge
-After=bluetooth.target
+Description=Charnwood Aire 300 MQTT bridge
+After=bluetooth.target mosquitto.service
 
 [Service]
-ExecStart=/orb/Dev/openwood/.venv/bin/openwood mqtt 10:06:1C:E5:10:3E --host homeassistant.local --user mqttuser --password mqttpass
+Type=simple
+User=trougnouf
+# the machine's user config dirs are read-only, so point the config somewhere writable
+Environment=OPENWOOD_CONFIG=/etc/openwood/config.json
+ExecStart=/orb/Dev/openwood/.venv/bin/openwood mqtt \
+    --host 127.0.0.1 --user openwood --password <bridge password> \
+    --name "Charnwood Aire 300" --poll-interval 20
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+Run `openwood use` once as the service user (or copy the config file to
+`/etc/openwood/config.json`) so the bridge knows the default stove, then:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now openwood-mqtt
+journalctl -u openwood-mqtt -f
+```
+
+### Notes
+
+- The bridge holds one persistent BLE connection and re-subscribes
+  automatically after radio drops; the stove allows up to 3 connected
+  devices (bridge + phone app is fine).
+- State updates come from the stove's change-push notifications (~5 s);
+  polling is only a fallback. HA automations can trigger on door open,
+  check fuel (reload due), overfire warning, or errors.
+- The stove thermostat uses the sensor on its power cable, so HA's
+  room-temperature entity may read warmer than elsewhere in the room.
 
 ## WiFi notes
 
