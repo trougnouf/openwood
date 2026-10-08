@@ -280,6 +280,9 @@ class PackedStatus:
     manual_level: int = 0
     alerts: bool = False
     special_mode: int = 0
+    valve_1_raw: int | None = None
+    valve_2_raw: int | None = None
+    valve_3_raw: int | None = None
 
 
 def parse_full_status(s: str) -> PackedStatus | None:
@@ -336,6 +339,9 @@ def parse_reading_set(s: str) -> PackedStatus | None:
         st.manual_level = int(s[31:33], 16)
         st.mode = int(s[33:35], 16)
         st.room_setpoint = hex16(s[35:37]) / 2.0
+        st.valve_1_raw = int(s[18:21], 16)   # register 0x14
+        st.valve_2_raw = int(s[21:24], 16)   # register 0x13
+        st.valve_3_raw = int(s[24:27], 16)   # register 0x15
         return st
     if len(s) == 59:
         st.minutes_of_day = int(s[8:11], 16)
@@ -355,6 +361,9 @@ def parse_reading_set(s: str) -> PackedStatus | None:
         st.alerts = s[53] != "0"
         st.special_mode = int(s[54], 16)
         st.board_temp = hex16(s[55:59]) / 10.0
+        st.valve_2_raw = int(s[40:44], 16)   # register 0x13
+        st.valve_1_raw = int(s[44:48], 16)   # register 0x14
+        st.valve_3_raw = int(s[48:52], 16)   # register 0x15
         return st
     return None
 
