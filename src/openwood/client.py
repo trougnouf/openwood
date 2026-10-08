@@ -9,6 +9,7 @@ import time
 import logging
 
 from bleak import BleakClient, BleakScanner
+from bleak.exc import BleakError
 from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
 
@@ -16,7 +17,7 @@ from . import protocol as P
 
 log = logging.getLogger(__name__)
 
-CONNECTION_TIMEOUT = 20.0
+CONNECTION_TIMEOUT = 45.0
 
 
 def _ascii(b: bytes) -> str:
@@ -58,7 +59,11 @@ class Stove:
                     await asyncio.sleep(4)
                     continue
                 raise
-        raise last_exc  # type: ignore[misc]
+        raise BleakError(
+            "the Bluetooth adapter is busy with another scan (from blueman, "
+            "nubertctl, or another openwood); wait a few seconds and retry, "
+            "or set a default stove with `openwood use` to avoid scanning"
+        ) from last_exc
 
     @staticmethod
     async def _scan_once(wanted: tuple, timeout: float) -> list[BLEDevice]:

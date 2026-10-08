@@ -17,9 +17,6 @@ _resolved: Path | None = None
 
 def _candidates() -> list[Path]:
     paths = []
-    env = os.environ.get("OPENWOOD_CONFIG")
-    if env:
-        paths.append(Path(env))
     xdg = os.environ.get("XDG_CONFIG_HOME")
     if xdg:
         paths.append(Path(xdg) / "openwood" / "config.json")
@@ -30,9 +27,17 @@ def _candidates() -> list[Path]:
 
 
 def config_path() -> Path:
-    """First existing config file, else the first writable location."""
+    """First existing config file, else the first writable location.
+
+    $OPENWOOD_CONFIG is authoritative even if the file does not exist
+    yet (first run: it gets created on first save).
+    """
     global _resolved
     if _resolved is not None:
+        return _resolved
+    env = os.environ.get("OPENWOOD_CONFIG")
+    if env:
+        _resolved = Path(env)
         return _resolved
     for p in _candidates():
         if p.is_file():
@@ -77,7 +82,10 @@ def remember_seen(devices: list[BLEDevice]) -> None:
     seen = cfg.get("seen") or {}
     seen.update({d.address: d.name or "Charnwood" for d in devices})
     cfg["seen"] = seen
-    save(cfg)
+    try:
+        save(cfg)
+    except OSError:
+        pass
 
 
 def set_default(address: str, name: str | None = None) -> None:
@@ -88,6 +96,25 @@ def set_default(address: str, name: str | None = None) -> None:
     save(cfg)
 
 
+def auto_save_default(address: str, name: str | None = None) -> bool:
+    """Best-effort: remember a discovered stove as the default.
+
+    Returns False (with a warning on stderr) when the config is not
+    writable, e.g. $HOME is read-only and no writable fallback exists.
+    """
+    try:
+        set_default(address, name)
+        return True
+    except OSError as e:
+        print(
+            f"# could not save the default stove ({e});\n"
+            "# every command will re-scan. Set a default with:\n"
+            "#   openwood use",
+            file=sys.stderr,
+        )
+        return False
+
+
 def get_default() -> tuple[str | None, str | None]:
     cfg = load()
     addr = cfg.get("default_address")
@@ -95,7 +122,7 @@ def get_default() -> tuple[str | None, str | None]:
     return addr, name
 
 
-async def resolve_address(explicit: str | None, scan_timeout: float = 8.0) -> str:
+async def resolve_address(explicit: str | None, scan_timeout: float = 15.0) -> str:
     """Pick a stove: explicit arg > configured default > the only one found."""
     if explicit:
         return explicit
@@ -106,9 +133,15 @@ async def resolve_address(explicit: str | None, scan_timeout: float = 8.0) -> st
         return addr
     devices = await Stove.scan(timeout=scan_timeout)
     if len(devices) == 1:
-        remember_seen(devices)
+        try:
+            remember_seen(devices)
+        except OSError:
+            pass
         print(f"# using discovered stove {devices[0].name} at {devices[0].address}",
               file=sys.stderr)
+        if auto_save_default(devices[0].address, devices[0].name):
+            print("# remembered as default (undo with: openwood forget "
+                  f"{devices[0].address})", file=sys.stderr)
         return devices[0].address
     if not devices:
         print(

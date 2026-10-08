@@ -568,9 +568,14 @@ def main(argv=None) -> int:
             return await run_mqtt_bridge(args)
 
         args.func = _mqtt
+    from bleak.exc import BleakError
+
     try:
         return asyncio.run(args.func(args))
     except ConnectionError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except BleakError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
