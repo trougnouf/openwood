@@ -168,10 +168,20 @@ sudoedit /etc/mosquitto/mosquitto.conf   # the broker config (not the systemd un
 ```
 
 ```conf
-listener 1883 0.0.0.0
+listener 1883 127.0.0.1
+# if Home Assistant runs in a bridged docker container, it reaches the
+# host broker via the docker bridge gateway - add a listener for it:
+listener 1883 172.17.0.1
 allow_anonymous false
 password_file /etc/mosquitto/passwd
 ```
+
+Two gotchas: `mosquitto_passwd` leaves the passwd file unreadable for the
+`mosquitto` user (`sudo chown mosquitto:mosquitto /etc/mosquitto/passwd
+&& sudo chmod 640 /etc/mosquitto/passwd`), and if the broker failed
+repeatedly, `sudo systemctl reset-failed mosquitto` before restarting.
+A containerized HA connects to `172.17.0.1`, not `127.0.0.1` (unless it
+runs with host networking).
 
 ```sh
 sudo mosquitto_passwd -c /etc/mosquitto/passwd homeassistant   # HA's user
