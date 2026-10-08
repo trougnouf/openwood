@@ -148,7 +148,12 @@ The HTTP endpoint `/get-reading-set` returns the same style of string in a
 In Test mode the stove reverts to Automatic the next time the door is
 opened. Emergency/special modes (DATA register 19): powercut (1, nominal
 air for manual operation) and chimney fire (2, complete air shutdown);
-write 3 to cancel/restart. Extended burn (register 07): stove shuts down
+write 3 to cancel/restart. Writing 3 in a normal state performs the
+app's "Restart": the controller reboots (~45 s), valve positions hold,
+the clock keeps running, WiFi re-connects from saved credentials, but the
+mode resets to the default (Automatic, intensity 3), Extended Burn
+switches off, and the burn state machine restarts at LIGHTING E
+(verified on a live Aire 300). Extended burn (register 07): stove shuts down
 to preserve a char firebed until refuelled. Alerts (register 17): pulses
 the stove light blue when a reload is due.
 

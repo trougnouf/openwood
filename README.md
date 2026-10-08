@@ -132,6 +132,13 @@ command also works with an explicit address when you have more than one stove.
 .venv/bin/openwood special chimney-fire
 .venv/bin/openwood special cancel
 
+# remote restart of the stove controller (e.g. when its WiFi wedges after
+# a router reset; same as the app's Restart). CAUTION: resets the mode to
+# the default (Automatic, intensity 3) and Extended Burn off - re-apply
+# your mode afterwards. Valves hold position, WiFi re-connects from the
+# saved credentials.
+.venv/bin/openwood restart
+
 # housekeeping
 .venv/bin/openwood sync-time
 .venv/bin/openwood wifi set --ssid MyNet --password secret

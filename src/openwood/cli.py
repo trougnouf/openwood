@@ -389,6 +389,27 @@ async def cmd_special(args) -> int:
     return 0
 
 
+async def cmd_restart(args) -> int:
+    async with await _stove(args) as stove:
+        try:
+            await stove.special_mode(P.SPECIAL_CANCEL)
+        except Exception as e:
+            # the reboot drops the link mid-write; the command usually lands
+            print(f"link dropped during write ({e}) - the restart usually "
+                  "lands anyway; wait ~30 s and check with `openwood status`")
+            return 0
+        print(
+            "restart command sent (register 0x19 = 3, same as the app's "
+            "Restart). Allow ~30 s before the next status.\n"
+            "NOTE (observed on the real stove): the controller reboots, "
+            "WiFi re-connects from saved credentials and air valve "
+            "positions hold, BUT the mode resets to the default "
+            "(Automatic, intensity 3) and Extended Burn switches off - "
+            "re-apply your mode afterwards if needed."
+        )
+    return 0
+
+
 async def cmd_sync_time(args) -> int:
     async with await _stove(args) as stove:
         if not args.force:
@@ -561,6 +582,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_address(p)
     p.add_argument("mode", choices=["powercut", "chimney-fire", "cancel"])
     p.set_defaults(func=cmd_special)
+
+    p = sub.add_parser(
+        "restart",
+        help="soft-restart the stove controller (same as the app's Restart; "
+        "also brings WiFi back up from saved credentials). CAUTION: resets "
+        "the mode to the default (Automatic, intensity 3) and Extended Burn "
+        "off, and restarts the burn cycle",
+    )
+    _add_address(p)
+    p.set_defaults(func=cmd_restart)
 
     p = sub.add_parser("sync-time", help="set stove clock from this computer")
     _add_address(p)
