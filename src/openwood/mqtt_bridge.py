@@ -150,10 +150,24 @@ class DiscoveryBuilder:
 
 
 def parse_float(payload: str) -> float | None:
+    """Parse a temperature from an MQTT payload.
+
+    Accepts plain numbers ("21.5") or JSON with a "temperature" key
+    (Zigbee2MQTT / ESPHome conventions), e.g. {"temperature": 21.5}.
+    """
     try:
         return float(payload)
     except (TypeError, ValueError):
-        return None
+        pass
+    try:
+        data = json.loads(payload)
+        if isinstance(data, dict):
+            value = data.get("temperature")
+            if value is not None:
+                return float(value)
+    except (TypeError, ValueError):
+        pass
+    return None
 
 
 async def run_mqtt_bridge(args) -> int:

@@ -307,9 +307,45 @@ temperature topic and adjusts the stove setpoint accordingly:
   from the stove button or the phone app always wins.
 - The remote temperature also shows up in Home Assistant as an
   "External temperature" sensor on the stove device.
+- Payloads can be plain numbers (`21.3`) or JSON with a "temperature"
+  key (`{"temperature": 21.3, "humidity": 45}` — Zigbee2MQTT / ESPHome
+  style).
 
-(Alternatively, with no code: an HA automation on the climate entity's
-setpoint does the same thing.)
+### Setting up the remote sensor (Home Assistant)
+
+1. **Get the sensor into HA and onto MQTT.** Any of these works:
+   - Zigbee sensor via Zigbee2MQTT (or ZHA + MQTT statestream) - its
+     topic is already there, e.g. `zigbee2mqtt/Bedroom`
+   - ESPHome / Tasmota WiFi sensor with MQTT enabled
+   - Any other HA sensor: enable the `mqtt_statestream` integration to
+     republish entity states to MQTT (add `mqtt_statestream:` with
+     `base_topic: homeassistant-statestream`, `include_attributes:
+     false` to configuration.yaml, restart HA)
+2. **Find the exact topic** by watching the broker while the sensor
+   reports:
+   ```sh
+   mosquitto_sub -u homeassistant -P '<pw>' -t '#' -v | grep -i "temp\|bedroom"
+   ```
+3. **Point the bridge at it** - for the systemd service, edit
+   `/etc/openwood/mqtt.env`:
+   ```conf
+   EXT_TEMP_TOPIC=zigbee2mqtt/Bedroom
+   EXT_TARGET=21
+   # optional tuning:
+   #EXT_SETPOINT_LOW=16
+   #EXT_SETPOINT_COMFORT=23
+   #EXT_HYSTERESIS=0.5
+   #EXT_MIN_INTERVAL=120
+   ```
+   then `sudo systemctl restart openwood-mqtt`.
+4. **Verify**: the stove device in HA gains an "External temperature"
+   entity showing the upstairs reading, and when it crosses
+   `EXT_TARGET + 0.5` the stove's setpoint drops (watch the climate
+   entity or `journalctl -u openwood-mqtt -f` for the "external
+   thermostat" lines).
+
+(Alternatively, with no bridge configuration: an HA automation on the
+climate entity's setpoint does the same thing.)
 
 ### Notes
 
