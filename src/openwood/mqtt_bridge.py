@@ -407,6 +407,7 @@ async def run_mqtt_bridge(args) -> int:
 
     last_snapshot = None
     wifi_failures = 0
+    last_wifi_retry = 0.0
     try:
         while True:
             if mqtt_rc["code"] is not None and mqtt_rc["code"] != 0:
@@ -416,6 +417,23 @@ async def run_mqtt_bridge(args) -> int:
                     st = await Stove.read_wifi(ip)
                     wifi_failures = 0
                 else:
+                    # If we fell back to BLE due to a WiFi outage, probe
+                    # WiFi every 10 min and switch back when it revives
+                    # (the stove's WiFi stack is unreliable in SLEEP).
+                    if ip and time.monotonic() - last_wifi_retry > 600:
+                        last_wifi_retry = time.monotonic()
+                        try:
+                            await Stove.read_wifi(ip)
+                            log.info("WiFi is back; leaving the BLE stream")
+                            try:
+                                await stove.disconnect()
+                            except Exception:
+                                pass
+                            wifi_mode = True
+                            ble_stream = False
+                            wifi_failures = 0
+                        except Exception:
+                            pass
                     age = stove.push_age()
                     needs_poll = (
                         not stove.notifications_active

@@ -230,10 +230,13 @@ class Stove:
     async def read_all(self, include_meta: bool = False) -> P.StoveState:
         """Poll all registers and return a full snapshot (like the app)."""
         st = P.StoveState()
+        self._require()  # a dead link must raise, not yield an empty state
 
         async def rdx(index: int) -> bytes | None:
             try:
                 return await self.read_data(index)
+            except ConnectionError:
+                raise  # link died mid-read: abort so callers reconnect
             except Exception as e:
                 log.warning("register %02x unreadable: %s", index, e)
                 return None

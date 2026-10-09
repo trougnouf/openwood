@@ -333,18 +333,34 @@ MODE_ALIASES = {
 }
 
 
+LIGHTING_STATES = (1, 18)  # LIGHTING / LIGHTING E
+
+
+def _warn_if_lighting(st: P.StoveState) -> None:
+    if st.burn_cycle in LIGHTING_STATES:
+        print(
+            f"# note: the stove is in {st.burn_cycle_name}; the firmware "
+            "reverts mode changes until combustion is established - "
+            "re-apply this once the burn cycle shows EARLY BURN or later "
+            "(verified on the real stove)",
+            file=sys.stderr,
+        )
+
+
 async def cmd_set_mode(args) -> int:
     async with await _stove(args) as stove:
-        await stove.read_all()
+        st = await stove.read_all()
         mode = MODE_ALIASES[args.mode]
         await stove.set_mode(mode, args.level, args.setpoint)
         print(f"mode set to {P.MODE_NAMES[mode]}")
+        _warn_if_lighting(st)
     return 0
 
 
 async def cmd_set_level(args) -> int:
     async with await _stove(args) as stove:
-        await stove.read_all()
+        st = await stove.read_all()
+        _warn_if_lighting(st)
         await stove.set_intensity(args.level)
         print(f"burn intensity set to {args.level} (Automatic mode)")
     return 0
@@ -359,7 +375,8 @@ async def cmd_set_air(args) -> int:
 
 async def cmd_set_temp(args) -> int:
     async with await _stove(args) as stove:
-        await stove.read_all()
+        st = await stove.read_all()
+        _warn_if_lighting(st)
         await stove.set_room_setpoint(args.temp)
         print(f"room setpoint set to {args.temp:.1f} C (auto mode)")
     return 0
