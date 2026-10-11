@@ -19,11 +19,12 @@ Reverse engineered from the Android app `com.charnwood.charnwoodcontrol_v2`
 - Pairing: the stove requires a button press (blinking blue light) plus a
   numeric-comparison PIN confirm on the connecting device. The bond persists;
   `delete-pairing` (META register 09, value 3) clears it on the stove side.
-- Actual GATT layout (verified on an Aire 300, firmware "2.3.36 - 2.1.29"):
+- Actual GATT layout (verified on an Aire 300, firmware "2.3.36 - 2.1.29";
+  re-verified on firmware "2.3.82 - 2.1.78"):
 
   | Service | Characteristics |
   |---|---|
-  | `2a51ff00-…` | 85c7ff00–08 |
+  | `2a51ff00-…` | 85c7ff00–09 |
   | `2a51ff01-…` | 85c7ff0a–13 |
   | `2a51ff02-…` | 85c7ff14–19 |
   | `116eff00-…` | 7877ff00–09 |
@@ -102,8 +103,9 @@ Writes to DATA registers:
 
 ### Packed status string (register 7877ff0f, ASCII hex digits)
 
-56-character layout (60-char variant pads threshold fields to 4 digits and
-board temp to [55:59]):
+The Android app v2.0.31 parses a 59-char layout (all threshold/valve
+fields 4 digits wide). The same head layout exists in three observed
+lengths that differ in the trailing block:
 
 ```
 [0:8]   date (hex of yyyyMMdd)      [8:11]  minutes of day (hex)
@@ -113,10 +115,20 @@ board temp to [55:59]):
 [28]    overnight                   [29]    check_fuel
 [30]    burning                     [31:33] burn_cycle_progress
 [33]    mode                        [34:38] error_code
-[38:40] manual_level               [40:43] threshold_p  ([40:44] in 60-char)
+[38:40] manual_level               [40:43] threshold_p  ([40:44] in 59/60-char)
 [43:46] threshold_q ([44:48])       [46:49] threshold_r ([48:52])
-[49]    unknown_s                  [50]    fuel_alert     [51]    special_mode/state
-[52:56] board temp (signed16, /10)  (60-char: [52] s, [53] fuel_alert, [54] state, [55:59] board temp)
+```
+
+Then, per variant:
+
+```
+56-char (old firmware): [49] unknown_s | [50] fuel_alert |
+    [51] special_mode/state | [52:56] board temp (signed16, /10)
+59-char (app v2.0.31, BLEService2.java): [52] unknown_s | [53] fuel_alert |
+    [54] special_mode/state | [55:59] board temp
+60-char (fw 2.3.82; one extra char before the flags):
+    [53] unknown_s | [54] fuel_alert | [55] special_mode/state |
+    [56:60] board temp
 ```
 
 `h.q(str)`: 4 hex chars → signed 16-bit (sign-extend from bit 15).

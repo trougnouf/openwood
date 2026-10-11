@@ -286,12 +286,24 @@ class PackedStatus:
 
 
 def parse_full_status(s: str) -> PackedStatus | None:
-    """Parse the 56/60-char ASCII status string from register 7877ff0f."""
+    """Parse the 56/59/60-char ASCII status string from register 7877ff0f.
+
+    Identical layout through index 40; the trailing valve/threshold block
+    differs per variant (unknown_s / fuel_alert / special_mode are single
+    hex digits, board temp is 4):
+    - 56 chars: flags at [49][50][51], board at [52:56] (old firmware).
+    - 59 chars: flags at [52][53][54], board at [55:59] — what Android
+      app v2.0.31 parses (BLEService2.java).
+    - 60 chars: one extra char before the flags; flags at [53][54][55],
+      board at [56:60] (firmware 2.3.82).
+    """
     s = s.strip("\x00").strip()
     if len(s) == 56:
-        p_ofs, board_ofs = 3, slice(52, 56)
+        flag_ofs, board_ofs = 49, slice(52, 56)
+    elif len(s) == 59:
+        flag_ofs, board_ofs = 52, slice(55, 59)
     elif len(s) == 60:
-        p_ofs, board_ofs = 4, slice(55, 59)
+        flag_ofs, board_ofs = 53, slice(56, 60)
     else:
         return None
     st = PackedStatus()
@@ -309,18 +321,9 @@ def parse_full_status(s: str) -> PackedStatus | None:
     st.mode = int(s[33], 16)
     st.error_code = int(s[34:38], 16)
     st.manual_level = int(s[38:40], 16)
-    if len(s) == 56:
-        st.board_temp = hex16(s[board_ofs]) / 10.0
-        # 56-char variant uses 3-digit threshold fields we do not expose.
-    else:
-        st.board_temp = hex16(s[board_ofs]) / 10.0
-    if len(s) == 60:
-        st.alerts = s[53] != "0"
-        st.special_mode = int(s[54], 16)
-    else:
-        st.alerts = s[50] != "0"
-        st.special_mode = int(s[51], 16)
-    _ = p_ofs
+    st.board_temp = hex16(s[board_ofs]) / 10.0
+    st.alerts = s[flag_ofs + 1] != "0"
+    st.special_mode = int(s[flag_ofs + 2], 16)
     return st
 
 

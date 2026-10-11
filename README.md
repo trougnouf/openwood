@@ -389,4 +389,7 @@ PROTOCOL.md           full protocol documentation
   retries each register 3 times and tolerates partial failures.
 - The reverse engineering was done against app v2.0.31 / stove firmware
   "2.3.36 - 2.1.29"; register meanings are documented in PROTOCOL.md, and
-  registers the app ignores are exposed raw where sensible.
+  registers the app ignores are exposed raw where sensible. On firmware
+  "2.3.82 - 2.1.78" the register map is unchanged, but the packed status
+  string (register 7877ff0f) gained an extra character before its trailing
+  flag block; `parse_full_status` handles all three observed layouts.
