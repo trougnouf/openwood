@@ -141,7 +141,8 @@ command also works with an explicit address when you have more than one stove.
 
 # housekeeping
 .venv/bin/openwood sync-time
-.venv/bin/openwood wifi set --ssid MyNet --password secret
+.venv/bin/openwood wifi set --ssid MyNet   # prompts for the password
+                                          # (or --password, visible in `ps`)
 .venv/bin/openwood wifi show
 .venv/bin/openwood wifi delete
 .venv/bin/openwood firmware
@@ -191,7 +192,11 @@ Three gotchas:
   at boot mosquitto starts before docker creates docker0 and dies with
   "Cannot assign requested address" (then start-limit-hit). Order it
   after docker with a drop-in (`sudo systemctl edit mosquitto`):
-  `[Unit]` / `After=docker.service` / `Wants=docker.service`
+  `[Unit]` / `After=docker.service` / `Wants=docker.service`.
+  The openwood-git package ships this drop-in for you
+  (`packaging/systemd/mosquitto-docker0.conf`); for a source install
+  create it by hand. After adding it: `sudo systemctl daemon-reload`
+  and `sudo systemctl restart mosquitto`.
 - if the broker failed repeatedly, `sudo systemctl reset-failed
   mosquitto` before restarting
 
@@ -217,9 +222,13 @@ default).
 
 ```sh
 .venv/bin/openwood mqtt \
-    --host 127.0.0.1 --user openwood --password <bridge password> \
+    --host 127.0.0.1 --user openwood \
     --name "Charnwood Aire 300" --poll-interval 20
 ```
+
+Omitting `--password` prompts for it in the terminal (the MQTT_PASSWORD
+environment variable works too). Only pass `--password` in scripts: a
+command-line password is visible to every user in `ps` output.
 
 The stove must already be paired and set as default (`openwood use`).
 Within ~30 s, the device "Charnwood Aire 300" appears in HA under
@@ -291,7 +300,7 @@ temperature topic and adjusts the stove setpoint accordingly:
 
 ```sh
 .venv/bin/openwood mqtt \
-    --host 127.0.0.1 --user openwood --password <pw> \
+    --host 127.0.0.1 --user openwood \
     --ext-temp-topic homeassistant/sensor/bedroom_temperature/state \
     --ext-target 21
 ```

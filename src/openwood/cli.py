@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -23,6 +25,37 @@ def float_or_none(v: str) -> float | None:
     if v is None or not v.strip():
         return None
     return float(v)
+
+
+def mqtt_password(args) -> str | None:
+    """Resolve the broker password without leaking it in `ps` output.
+
+    Priority: --password flag, then the MQTT_PASSWORD environment variable
+    (what openwood-mqtt.service provides via its EnvironmentFile), then an
+    interactive prompt. Returns None if the broker is anonymous (--user
+    not given) or if no password can be found non-interactively.
+    """
+    if args.password:
+        return args.password
+    pw = os.environ.get("MQTT_PASSWORD") or None
+    if pw:
+        return pw
+    if not args.user:
+        return None
+    if sys.stdin.isatty():
+        return getpass.getpass(f"MQTT password for {args.user!r}: ") or None
+    return None
+
+
+def prompt_wifi_password(ssid: str) -> str | None:
+    """Ask for the stove's WiFi password on the terminal (typed blind)."""
+    pw = getpass.getpass(f"WiFi password for network {ssid!r}: ")
+    if not pw:
+        return None
+    if getpass.getpass("Repeat password: ") != pw:
+        print("error: passwords do not match", file=sys.stderr)
+        return None
+    return pw
 
 
 def _fmt_state(st: P.StoveState, verbose: bool = False) -> str:
@@ -440,10 +473,15 @@ async def cmd_sync_time(args) -> int:
 async def cmd_wifi(args) -> int:
     async with await _stove(args) as stove:
         if args.action == "set":
-            if not args.ssid or args.password is None:
-                print("error: --ssid and --password required", file=sys.stderr)
+            if not args.ssid:
+                print("error: --ssid required", file=sys.stderr)
                 return 2
-            await stove.set_wifi(args.ssid, args.password)
+            password = args.password
+            if password is None:
+                password = prompt_wifi_password(args.ssid)
+                if password is None:
+                    return 2
+            await stove.set_wifi(args.ssid, password)
             print("wifi credentials sent; stove is connecting (check `status`)")
         elif args.action == "delete":
             await stove.delete_wifi()
@@ -641,7 +679,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="localhost")
     p.add_argument("--port", type=int, default=1883)
     p.add_argument("--user")
-    p.add_argument("--password")
+    p.add_argument("--password", help="omit to use the MQTT_PASSWORD environment "
+                                     "variable, or to be prompted in a terminal")
     p.add_argument("--topic-prefix", default="homeassistant")
     p.add_argument("--poll-interval", type=float_or_none, default=15.0)
     p.add_argument("--name", default=None, help="entity name (defaults to configured name)")
@@ -708,6 +747,12 @@ def main(argv=None) -> int:
             if not args.name:
                 cfg = config.load()
                 args.name = (cfg.get("names") or {}).get(args.address) or "Charnwood stove"
+            args.password = mqtt_password(args)
+            if args.user and not args.password:
+                print("error: MQTT password required for "
+                      f"{args.user!r}: use --password, set MQTT_PASSWORD, "
+                      "or run in a terminal to be prompted", file=sys.stderr)
+                return 2
             return await run_mqtt_bridge(args)
 
         args.func = _mqtt
