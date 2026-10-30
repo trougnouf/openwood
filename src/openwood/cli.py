@@ -401,6 +401,8 @@ async def cmd_set_level(args) -> int:
 
 async def cmd_set_air(args) -> int:
     async with await _stove(args) as stove:
+        st = await stove.read_all()
+        _warn_if_lighting(st)
         await stove.set_test_air(args.percent)
         print(f"Test mode air set to {args.percent}%")
     return 0
@@ -436,6 +438,277 @@ async def cmd_special(args) -> int:
     async with await _stove(args) as stove:
         await stove.special_mode(value)
         print(f"special mode command sent: {args.mode}")
+    return 0
+
+
+async def cmd_rescue(args) -> int:
+    """Rescue the stuck-LIGHTING bug: engage powercut mode (register
+    0x19 = 1), which takes the state machine to POWER CUT MODE and drives
+    the air valves to the nominal air setting - the fire then burns at a
+    controlled rate instead of full blast. Verified on the real stove."""
+    from .stuck import POWERCUT_STATE, stuck_in_lighting
+
+    async with await _stove(args) as stove:
+        st = await stove.read_all()
+        stuck = stuck_in_lighting(st, args.temp)
+        if not stuck and not args.force:
+            print(
+                f"not stuck: burn cycle = {st.burn_cycle_name} "
+                f"(stove {st.stove_temp if st.stove_temp is not None else '?'} C); "
+                "use --force to engage powercut mode anyway",
+                file=sys.stderr,
+            )
+            return 3
+        if stuck:
+            print(
+                f"stuck: {st.burn_cycle_name} with stove at "
+                f"{st.stove_temp:.0f} C (threshold {args.temp:.0f} C); "
+                "engaging powercut mode"
+            )
+        else:
+            print("engaging powercut mode anyway (--force)")
+        mode = st.mode if st.mode is not None else P.MODE_AUTOMATIC
+        level, setp, ext = st.manual_level, st.room_setpoint, st.extended_burn
+        try:
+            await stove.special_mode(P.SPECIAL_POWERCUT)
+        except Exception as e:
+            print(f"write failed: {e}", file=sys.stderr)
+            return 1
+        deadline = time.monotonic() + args.wait
+        engaged = False
+        while time.monotonic() < deadline:
+            await asyncio.sleep(10)
+            try:
+                st = await stove.read_all()
+            except Exception as e:
+                print(f"read failed: {e}", file=sys.stderr)
+                continue
+            if st.burn_cycle == POWERCUT_STATE or st.special_mode == P.SPECIAL_POWERCUT:
+                engaged = True
+                break
+        if not engaged:
+            print(
+                f"no confirmation within {args.wait:.0f} s (last state: "
+                f"{st.burn_cycle_name}); the write may still have landed - "
+                "check with `openwood status`",
+                file=sys.stderr,
+            )
+            return 1
+        gauges = st.valve_gauges
+        v = "  ".join(f"v{k}={gauges[k]:.0f}%" for k in ("1", "2", "3") if k in gauges)
+        before = (
+            f"mode={P.MODE_NAMES.get(mode, mode)}"
+            + (f" level={level}" if mode == P.MODE_AUTOMATIC else "")
+            + (f" setpoint={setp:.1f}C" if mode == P.MODE_ROOM_TEMP and setp else "")
+            + (f" extended_burn={'on' if ext else 'off'}" if ext is not None else "")
+        )
+        print(
+            f"engaged: {st.burn_cycle_name}, valves -> {v}\n"
+            "the damper now holds the nominal air setting; the fire burns\n"
+            "at a controlled rate instead of full blast.\n"
+            "when the fire is out (stove < ~60 C for ~10 min):\n"
+            "    openwood special cancel     # restarts the controller\n"
+            f"NOTE: the restart resets the mode to Automatic (intensity 3)\n"
+            f"and Extended Burn off. Before the rescue: {before} -\n"
+            "re-apply them once the burn cycle shows EARLY BURN or later\n"
+            "(mode writes are reverted while the stove sits in LIGHTING)."
+        )
+        return 0
+
+
+async def cmd_guard(args) -> int:
+    """Run the stuck-LIGHTING guard loop (see README, 'Stuck in LIGHTING').
+
+    Polls the stove (WiFi if its IP is known, else the BLE stream), feeds
+    each state to StuckGuard and executes the returned actions over a
+    short on-demand BLE link (control always uses BLE, like the bridge).
+    """
+    from .stuck import StuckGuard
+
+    if args.disable:
+        config.set_stuck_guard(False)
+        print("stuck guard disabled (persisted)")
+        return 0
+    if args.enable:
+        config.set_stuck_guard(True)
+    elif not config.get_stuck_guard():
+        print(
+            "stuck guard is disabled (it deviates from the firmware's "
+            "behaviour; the bug may be fixed upstream).\n"
+            "Enable it with:\n"
+            "    openwood guard --enable\n"
+            "or the 'Stuck guard' switch in Home Assistant.",
+            file=sys.stderr,
+        )
+        return 3
+
+    lock = config.GuardLock()
+    if not lock.try_acquire():
+        print(
+            f"another guard is already running (lock held: "
+            f"{config.guard_lock_path()}); exiting",
+            file=sys.stderr,
+        )
+        return 3
+
+    guard = StuckGuard(
+        peak_temp=args.peak,
+        fall_delta=args.fall_delta,
+        backstop_minutes=args.backstop_minutes,
+        temp=args.temp,
+        exit_temp=args.exit_temp,
+        exit_minutes=args.exit_minutes,
+        refuel_assist=args.refuel_assist,
+        door_gate=args.door_gate,
+        enabled=True,
+    )
+    address = await config.resolve_address(getattr(args, "address", None))
+    src = getattr(args, "source", "auto")
+    ip = config.get_ip(address) if src in ("auto", "wifi") else None
+    if src == "wifi" and not ip:
+        print("error: no stored stove IP; run `openwood status --source ble` "
+              "once to capture it, or use --source ble", file=sys.stderr)
+        return 2
+
+    cmd_lock = asyncio.Lock()
+    stove = Stove(address)
+    connected = False
+    use_wifi = ip is not None
+    if not use_wifi:
+        await stove.connect()
+        connected = True
+        await stove.read_all()
+
+    print(
+        f"stuck guard running: stove={address} "
+        f"source={'wifi ' + ip if use_wifi else 'ble'} "
+        f"(poll {args.interval:.0f}s)\n"
+        f"engage: peak >= {guard.peak_temp:.0f} C falling {guard.fall_delta:.0f} C "
+        f"off the peak, or stuck hot >= {guard.temp:.0f} C for "
+        f"{int(guard.backstop_wait // 60)} min\n"
+        f"exit: < {guard.exit_temp:.0f} C for {int(guard.exit_wait // 60)} min "
+        f"(refuel assist {'on' if guard.refuel_assist else 'off'})"
+    )
+
+    async def with_stove(fn):
+        """Run a control coroutine: on the persistent link, or a short
+        on-demand BLE connection when serving status over WiFi."""
+        if connected:
+            await fn(stove)
+        else:
+            async with cmd_lock:
+                async with Stove(address) as cmd_stove:
+                    await fn(cmd_stove)
+
+    wifi_failures = 0
+    try:
+        while True:
+            # a toggle from Home Assistant (or `openwood guard --disable`
+            # in another terminal) stops the loop cleanly
+            if not config.get_stuck_guard():
+                print("stuck guard disabled; stopping")
+                return 0
+            try:
+                if use_wifi:
+                    st = await Stove.read_wifi(ip)
+                    wifi_failures = 0
+                else:
+                    await stove.read_all()
+                    st = stove.state
+            except Exception as e:
+                print(f"[{time.strftime('%H:%M:%S')}] read failed: {e}",
+                      file=sys.stderr)
+                if use_wifi:
+                    wifi_failures += 1
+                    if wifi_failures >= 5:
+                        print("# WiFi unreliable; switching to BLE", file=sys.stderr)
+                        use_wifi = False
+                        try:
+                            await stove.connect()
+                            connected = True
+                            await stove.read_all()
+                        except Exception as e2:
+                            print(f"BLE connect failed: {e2}", file=sys.stderr)
+                        await asyncio.sleep(min(args.interval, 5))
+                        continue
+                    await asyncio.sleep(min(args.interval, 5))
+                    continue
+                try:
+                    await stove.connect()
+                    connected = True
+                except Exception as e2:
+                    print(f"reconnect failed: {e2}", file=sys.stderr)
+                await asyncio.sleep(5)
+                continue
+            for action in guard.step(st, time.monotonic()):
+                stamp = time.strftime("%H:%M:%S")
+                if action == "engage":
+                    print(
+                        f"[{stamp}] LIGHTING stuck at {st.stove_temp or 0:.0f} C; "
+                        "engaging powercut mode (damper -> nominal air)"
+                    )
+                    try:
+                        await with_stove(
+                            lambda s: s.special_mode(P.SPECIAL_POWERCUT))
+                    except Exception as e:
+                        print(f"engage write failed: {e}", file=sys.stderr)
+                elif action == "exit":
+                    print(
+                        f"[{stamp}] fire out; exiting powercut mode "
+                        "(controller restarts)"
+                    )
+                    try:
+                        await with_stove(
+                            lambda s: s.special_mode(P.SPECIAL_CANCEL))
+                    except Exception as e:
+                        # the reboot drops the link mid-write; the command
+                        # usually lands anyway
+                        print(f"write dropped ({e}) - the restart usually "
+                              "lands anyway", file=sys.stderr)
+                elif action == "refuel_flare":
+                    print(
+                        f"[{stamp}] door held open in powercut mode; flaring "
+                        "(controller restarts so the fresh fuel re-ignites)"
+                    )
+                    try:
+                        await with_stove(
+                            lambda s: s.special_mode(P.SPECIAL_CANCEL))
+                    except Exception as e:
+                        print(f"write dropped ({e}) - the restart usually "
+                              "lands anyway", file=sys.stderr)
+                elif action == "restore":
+                    print(f"[{stamp}] restoring previous mode")
+                    try:
+                        await with_stove(guard.restore_mode)
+                    except Exception as e:
+                        print(f"restore failed ({e}); will retry", file=sys.stderr)
+            await asyncio.sleep(args.interval)
+    finally:
+        lock.release()
+        if connected:
+            await stove.disconnect()
+    return 0
+
+
+async def cmd_report(args) -> int:
+    from . import report as R
+
+    try:
+        samples = R.load_samples(args.logfile)
+    except (OSError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    if not samples:
+        print("no samples found in the log", file=sys.stderr)
+        return 2
+    cycles = R.find_cycles(samples, min_burn_temp=args.min_temp)
+    if args.csv_dir:
+        paths = R.write_cycle_csvs(cycles, args.csv_dir)
+        print(f"wrote {len(paths)} files to {args.csv_dir}", file=sys.stderr)
+    if args.json:
+        print(R.report_to_json(cycles))
+    else:
+        print(R.format_report(cycles))
     return 0
 
 
@@ -639,6 +912,75 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_special)
 
     p = sub.add_parser(
+        "rescue",
+        help="rescue the stuck-LIGHTING bug: engage powercut mode so the "
+        "air damper holds the nominal air setting instead of staying wide "
+        "open (see README, 'Stuck in LIGHTING')",
+    )
+    _add_address(p)
+    p.add_argument("--temp", type=float, default=150.0,
+                   help="stove temperature (C) at which LIGHTING counts as stuck")
+    p.add_argument("--force", action="store_true",
+                   help="engage even if the stove does not look stuck")
+    p.add_argument("--wait", type=float, default=90.0,
+                   help="seconds to wait for POWER CUT MODE confirmation")
+    p.set_defaults(func=cmd_rescue)
+
+    p = sub.add_parser(
+        "guard",
+        help="run the stuck-LIGHTING guard loop (auto-rescue: throttle at "
+        "peak or after 60 min hot, exit when the fire is out, restore the "
+        "previous mode, refuel assist). --enable/--disable set the "
+        "persisted on/off (default off; also toggleable from Home "
+        "Assistant)",
+    )
+    _add_address(p)
+    p.add_argument("--source", choices=["auto", "wifi", "ble"], default="auto",
+                   help="status transport: auto = WiFi if known, else BLE")
+    p.add_argument("--interval", type=float, default=30.0,
+                   help="poll interval in seconds (default 30)")
+    p.add_argument("--enable", action="store_true",
+                   help="enable the guard (persisted) and run it")
+    p.add_argument("--disable", action="store_true",
+                   help="disable the guard (persisted) and exit")
+    p.add_argument("--peak", type=float, default=300.0,
+                   help="peak stove temp (C) since the last door open needed "
+                        "for throttle-at-peak engage (default 300)")
+    p.add_argument("--fall-delta", type=float, default=20.0,
+                   help="fall off the peak (C) that triggers engage (default 20)")
+    p.add_argument("--backstop-minutes", type=float, default=60.0,
+                   help="minutes hot (>= --temp) in LIGHTING before the "
+                        "weak-fire backstop engages (default 60)")
+    p.add_argument("--temp", type=float, default=150.0,
+                   help="stove temp (C) at which LIGHTING counts as stuck (default 150)")
+    p.add_argument("--exit-temp", type=float, default=60.0,
+                   help="stove temp (C) below which the fire is considered out (default 60)")
+    p.add_argument("--exit-minutes", type=float, default=10.0,
+                   help="minutes cold before exiting powercut mode (default 10)")
+    p.add_argument("--refuel-assist", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="refuel assist: door held open in powercut mode "
+                        "reboots the controller so fresh fuel re-ignites "
+                        "(default on; --no-refuel-assist)")
+    p.add_argument("--door-gate", type=float, default=20.0,
+                   help="seconds the door must be held open for the refuel "
+                        "flare (default 20)")
+    p.set_defaults(func=cmd_guard)
+
+    p = sub.add_parser(
+        "report",
+        help="analyse a log (HA history export or `openwood watch --log` "
+        "CSV) into burn cycles; --csv-dir writes per-cycle CSVs for support",
+    )
+    p.add_argument("logfile")
+    p.add_argument("--csv-dir",
+                   help="write one CSV per cycle + cycles_summary.csv here")
+    p.add_argument("--json", action="store_true", help="machine-readable summary")
+    p.add_argument("--min-temp", type=float, default=150.0,
+                   help="drop lighting attempts that never reached this stove temp (C)")
+    p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser(
         "restart",
         help="soft-restart the stove controller (same as the app's Restart; "
         "also brings WiFi back up from saved credentials). CAUTION: resets "
@@ -718,6 +1060,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--ext-min-interval", type=float_or_none, default=120.0,
         help="minimum seconds between stove setpoint writes (default 120)",
     )
+    p.add_argument(
+        "--stuck-guard", action="store_true",
+        help="start the stuck-LIGHTING guard enabled (persisted; toggle at "
+        "runtime from Home Assistant's 'Stuck guard' switch or "
+        "`openwood guard --enable/--disable`)",
+    )
+    p.add_argument("--stuck-guard-peak", type=float_or_none, default=300.0,
+                   help="peak stove temp (C) since the last door open needed "
+                        "for throttle-at-peak engage (default 300)")
+    p.add_argument("--stuck-guard-fall-delta", type=float_or_none, default=20.0,
+                   help="fall off the peak (C) that triggers engage (default 20)")
+    p.add_argument("--stuck-guard-backstop-minutes", type=float_or_none, default=60.0,
+                   help="minutes hot (>= --stuck-guard-temp) in LIGHTING before "
+                        "the weak-fire backstop engages (default 60)")
+    p.add_argument("--stuck-guard-temp", type=float_or_none, default=150.0,
+                   help="stove temp (C) at which LIGHTING counts as stuck (default 150)")
+    p.add_argument("--stuck-guard-exit-temp", type=float_or_none, default=60.0,
+                   help="stove temp (C) below which the fire is considered out (default 60)")
+    p.add_argument("--stuck-guard-exit-minutes", type=float_or_none, default=10.0,
+                   help="minutes cold before exiting powercut mode (default 10)")
+    p.add_argument("--stuck-guard-refuel-assist",
+                   action=argparse.BooleanOptionalAction, default=True,
+                   help="refuel assist: door held open in powercut mode "
+                        "reboots the controller so fresh fuel re-ignites "
+                        "(default on; --no-stuck-guard-refuel-assist)")
+    p.add_argument("--stuck-guard-door-gate", type=float_or_none, default=20.0,
+                   help="seconds the door must be held open for the refuel "
+                        "flare (default 20)")
     p.set_defaults(func=None)  # wired in main()
 
     return ap

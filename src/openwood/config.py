@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sys
@@ -146,6 +147,60 @@ def forget_ip(address: str) -> None:
             save(cfg)
         except OSError:
             pass
+
+
+def get_stuck_guard() -> bool:
+    """Persisted stuck-LIGHTING guard on/off (default off)."""
+    return bool(load().get("stuck_guard", False))
+
+
+def set_stuck_guard(on: bool) -> None:
+    cfg = load()
+    if bool(cfg.get("stuck_guard", False)) != on:
+        cfg["stuck_guard"] = on
+        save(cfg)
+
+
+def guard_lock_path() -> Path:
+    """Lock file so the bridge guard and `openwood guard` never double-act."""
+    return config_path().parent / "stuck-guard.lock"
+
+
+class GuardLock:
+    """Advisory flock on guard_lock_path(); non-blocking try_acquire()."""
+
+    def __init__(self) -> None:
+        self._fd: int | None = None
+
+    def try_acquire(self) -> bool:
+        if self._fd is not None:
+            return True
+        path = guard_lock_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o644)
+        except OSError:
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return False
+        self._fd = fd
+        return True
+
+    @property
+    def held(self) -> bool:
+        return self._fd is not None
+
+    def release(self) -> None:
+        if self._fd is not None:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(self._fd)
+            self._fd = None
 
 
 def get_default() -> tuple[str | None, str | None]:

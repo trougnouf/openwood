@@ -18,6 +18,7 @@ import time
 from . import config
 from . import protocol as P
 from .client import Stove
+from .stuck import StuckGuard
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ class DiscoveryBuilder:
             ("valve_1", "Air valve 1 position", None, "%"),
             ("valve_2", "Air valve 2 position", None, "%"),
             ("valve_3", "Air valve 3 position", None, "%"),
+            ("stuck_guard_state", "Stuck guard state", None, None),
         ]
         for key, label, cls, unit in specs:
             cfg = {
@@ -91,6 +93,7 @@ class DiscoveryBuilder:
             ("overfire", "Overfire warning", "problem"),
             ("extended_burn", "Extended burn", None),
             ("has_error", "Error", "problem"),
+            ("stuck_guard", "Stuck guard (powercut engaged)", None),
         ]
         for key, label, cls in binary_specs:
             cfg = {
@@ -108,6 +111,7 @@ class DiscoveryBuilder:
         switches = [
             ("extended_burn", "Extended burn"),
             ("alerts", "Reload alerts"),
+            ("stuck_guard_enabled", "Stuck guard"),
         ]
         for key, label in switches:
             cfg = {
@@ -236,6 +240,40 @@ async def run_mqtt_bridge(args) -> int:
             ext_topic, ext_target, ext_low, ext_comfort, ext_hyst,
         )
 
+    # --- stuck-LIGHTING guard --------------------------------------------
+    # Always instantiated so the Home Assistant entities (the switch, the
+    # state sensor and the engaged binary) exist whether or not it is
+    # active. The enabled state is persisted (default off) and can be
+    # toggled at runtime from HA; --stuck-guard starts it enabled and
+    # persists that.
+    guard_enabled = config.get_stuck_guard()
+    if getattr(args, "stuck_guard", False):
+        guard_enabled = True
+        config.set_stuck_guard(True)
+    guard = StuckGuard(
+        peak_temp=float(getattr(args, "stuck_guard_peak", None) or 300.0),
+        fall_delta=float(getattr(args, "stuck_guard_fall_delta", None) or 20.0),
+        backstop_minutes=float(
+            getattr(args, "stuck_guard_backstop_minutes", None) or 60.0),
+        temp=float(getattr(args, "stuck_guard_temp", None) or 150.0),
+        exit_temp=float(getattr(args, "stuck_guard_exit_temp", None) or 60.0),
+        exit_minutes=float(getattr(args, "stuck_guard_exit_minutes", None) or 10.0),
+        refuel_assist=bool(getattr(args, "stuck_guard_refuel_assist", True)),
+        door_gate=float(getattr(args, "stuck_guard_door_gate", None) or 20.0),
+        enabled=guard_enabled,
+    )
+    log.info(
+        "stuck guard: %s (engage at peak >= %.0f C falling %.0f C, or "
+        "LIGHTING >= %.0f C for %d min; exit < %.0f C for %d min or SLEEP; "
+        "refuel assist %s with %.0f s door gate); toggle from Home "
+        "Assistant or `openwood guard --enable/--disable`",
+        "enabled" if guard_enabled else "disabled",
+        guard.peak_temp, guard.fall_delta, guard.temp,
+        int(guard.backstop_wait // 60), guard.exit_temp,
+        int(guard.exit_wait // 60),
+        "on" if guard.refuel_assist else "off", guard.door_gate,
+    )
+
     loop = asyncio.get_running_loop()
 
     cmd_lock = asyncio.Lock()
@@ -274,6 +312,12 @@ async def run_mqtt_bridge(args) -> int:
         elif payload_topic.endswith("alerts"):
             on = payload == "ON"
             await with_stove(lambda s: s.set_alerts(on))
+        elif payload_topic.endswith("stuck_guard_enabled"):
+            on = payload == "ON"
+            guard.set_enabled(on)
+            config.set_stuck_guard(on)
+            log.info("stuck guard: %s (persisted)",
+                     "enabled" if on else "disabled")
 
     def on_message(_client, _userdata, msg):
         payload = msg.payload.decode().strip()
@@ -329,6 +373,7 @@ async def run_mqtt_bridge(args) -> int:
         builder.topic("command", "manual_level"),
         builder.topic("command", "extended_burn"),
         builder.topic("command", "alerts"),
+        builder.topic("command", "stuck_guard_enabled"),
     ]:
         client.subscribe(topic)
     if ext_topic:
@@ -360,6 +405,9 @@ async def run_mqtt_bridge(args) -> int:
             g = gauges.get(i)
             if g is not None:
                 topics[f"valve_{i}"] = round(g, 1)
+        topics["stuck_guard"] = "ON" if guard.engaged else "OFF"
+        topics["stuck_guard_enabled"] = "ON" if guard.enabled else "OFF"
+        topics["stuck_guard_state"] = guard.state()
         if ext_topic:
             topics["ext_temp"] = round(ext["temp"], 1) if ext["temp"] is not None else None
         for key, value in topics.items():
@@ -444,6 +492,50 @@ async def run_mqtt_bridge(args) -> int:
                         await stove.read_all()
                     st = stove.state
                 await ext_thermostat_step(st)
+                for action in guard.step(st, time.monotonic()):
+                    if action == "engage":
+                        log.warning(
+                            "stuck guard: LIGHTING stuck at %.0f C; "
+                            "engaging powercut mode (damper -> nominal air)",
+                            st.stove_temp or 0.0,
+                        )
+                        try:
+                            await with_stove(
+                                lambda s: s.special_mode(P.SPECIAL_POWERCUT))
+                        except Exception as e:
+                            log.error("stuck guard: engage failed: %s", e)
+                    elif action == "exit":
+                        log.warning(
+                            "stuck guard: fire out; exiting powercut mode "
+                            "(controller restart; mode resets to Automatic)"
+                        )
+                        try:
+                            await with_stove(
+                                lambda s: s.special_mode(P.SPECIAL_CANCEL))
+                        except Exception as e:
+                            log.warning(
+                                "stuck guard: exit write dropped (%s); the "
+                                "restart usually lands anyway", e)
+                    elif action == "refuel_flare":
+                        log.info(
+                            "stuck guard: door held open in powercut mode; "
+                            "restarting the controller so the fresh fuel "
+                            "re-ignites (refuel assist)"
+                        )
+                        try:
+                            await with_stove(
+                                lambda s: s.special_mode(P.SPECIAL_CANCEL))
+                        except Exception as e:
+                            log.warning(
+                                "stuck guard: flare write dropped (%s); the "
+                                "restart usually lands anyway", e)
+                    elif action == "restore":
+                        log.info("stuck guard: restoring previous mode")
+                        try:
+                            await with_stove(guard.restore_mode)
+                        except Exception as e:
+                            log.warning("stuck guard: restore failed (%s); "
+                                        "will retry", e)
                 snap = state_snapshot(st)
                 now = time.monotonic()
                 if snap != last_snapshot and now - last_publish >= 1.0:

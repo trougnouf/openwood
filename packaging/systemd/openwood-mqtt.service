@@ -25,6 +25,11 @@ EnvironmentFile=/etc/openwood/mqtt.env
 # MQTT_PASSWORD is not passed on the command line: systemd's ${VAR}
 # expansion in ExecStart would expose it in `ps` output. The bridge reads
 # it from the environment directly.
+# Stuck-LIGHTING guard (firmware bug, fw 2.3.82): the bridge always runs
+# the guard, but it starts disabled by default (it deviates from the
+# official behaviour and the bug may be fixed upstream). Enable it from
+# Home Assistant's "Stuck guard" switch (persisted in config.json), or
+# add --stuck-guard to ExecStart to boot it enabled.
 ExecStart=/usr/bin/openwood mqtt --status-source ${STATUS_SOURCE} --host ${MQTT_HOST} --user ${MQTT_USER} --name ${STOVE_NAME} --poll-interval ${MQTT_POLL_INTERVAL} --ext-temp-topic ${EXT_TEMP_TOPIC} --ext-target ${EXT_TARGET} --ext-setpoint-low ${EXT_SETPOINT_LOW} --ext-setpoint-comfort ${EXT_SETPOINT_COMFORT} --ext-hysteresis ${EXT_HYSTERESIS} --ext-min-interval ${EXT_MIN_INTERVAL}
 Restart=always
 RestartSec=10

@@ -376,6 +376,108 @@ it serves `http://<stove-ip>/get-reading-set` with a status snapshot — handy
 for polling without Bluetooth (the Android app uses this too). BLE is still
 required for provisioning and firmware commands.
 
+## Stuck in LIGHTING (firmware bug, fw 2.3.82)
+
+With fast-burning dry softwood, the combustion state machine can get stuck
+in LIGHTING E: the firebox climbs to 350–400 °C within ~20 min, but the
+state never advances to EARLY BURN, and the air damper stays wide open the
+whole time. The stove burns fuel at maximum rate for hours and then drops
+straight from LIGHTING to SLEEP. Mode writes (automatic / room-temp / test)
+are reverted by the firmware while the machine sits in LIGHTING, so neither
+the app nor this CLI can throttle the damper. Reported to Charnwood (serial
+AJ001016, firmware "2.3.82 - 2.1.78").
+
+The one lever that works while stuck is the special powercut mode
+(register 0x19 = 1): the firmware honours it even in LIGHTING E, and the
+valves move to the nominal air positions (v1 ≈ 1 %, v2 ≈ 25 %, v3 ≈ 13 %)
+instead of staying wide open, so the fire burns at a controlled rate. It is
+a throttle, not a thermostat: at the nominal air setting the coal bed
+settles into a slow sustained smolder (in the 2026-10-29/30 field test the
+stove held 60–150 °C for hours) instead of burning out at full blast — the
+fire can be saved, not just stopped.
+
+```sh
+# engage (checks the stove looks stuck first: LIGHTING E + stove >= 150 C)
+.venv/bin/openwood rescue
+# exit codes: 0 = engaged, 3 = not stuck (nothing done), 1 = error
+# --force engages even when it does not look stuck, --temp 150 sets the
+# stuck threshold, --wait 90 is the confirmation window.
+# Re-running it while powercut is already active is a no-op (exit 3).
+
+# once the fire is out (stove < ~60 C for ~10 min, or SLEEP), exit:
+.venv/bin/openwood special cancel
+# = the app's Restart: the controller reboots, the stove returns to
+# LIGHTING E (fire still in the box) or SLEEP, and the mode resets to
+# Automatic intensity 3 with Extended Burn off. Re-apply your mode once
+# the cycle shows EARLY BURN or later (writes stick again then).
+```
+
+Do not exit powercut mode while the stove is still hot with a live fire —
+that leaves the damper wide open again.
+
+The MQTT bridge runs the guard continuously:
+
+```sh
+.venv/bin/openwood mqtt [--stuck-guard] \
+    [--stuck-guard-peak 300] [--stuck-guard-fall-delta 20] \
+    [--stuck-guard-backstop-minutes 60] [--stuck-guard-temp 150] \
+    [--stuck-guard-exit-temp 60] [--stuck-guard-exit-minutes 10] \
+    [--stuck-guard-refuel-assist | --no-stuck-guard-refuel-assist] \
+    [--stuck-guard-door-gate 20]
+```
+
+The guard starts **disabled by default**: it deviates from the official
+firmware behaviour, and the bug may be fixed upstream. `--stuck-guard`
+starts it enabled and persists that; the on/off state lives in
+config.json and can be toggled at any time from Home Assistant's
+"Stuck guard" switch (or `openwood guard --enable/--disable`).
+
+While enabled, the guard watches every status read:
+
+- **Engage (throttle-at-peak):** since the last door open the stove
+  peaked at ≥ 300 °C and is now falling off that peak by ~20 °C while
+  still in LIGHTING (E) — the fire established but the state machine
+  never left lighting, so the damper is throttled to the nominal air
+  setting before the fire burns out.
+- **Engage (weak-fire backstop):** the stove has been hot (≥ 150 °C) in
+  LIGHTING for 60 min without ever peaking.
+- **Exit:** the state machine reaches SLEEP, or the stove stays below
+  60 °C for 10 min — the fire is out; powercut is exited (the controller
+  reboots) and the mode / level / setpoint / extended-burn that were
+  active before the rescue are re-applied (retried until the stove holds
+  them, up to 4 h).
+- **Refuel assist:** the door is held open for ~20 s while in powercut —
+  the user is refuelling; the controller is rebooted (a "flare") so the
+  fresh fuel re-ignites under the state machine's normal lighting
+  sequence. The guard stays ready to re-engage if the re-lit fire sticks.
+
+Home Assistant entities (auto-discovered when the bridge starts):
+`stuck_guard` binary sensor (powercut engaged), `stuck_guard_enabled`
+switch (on/off, persisted), `stuck_guard_state` sensor (disabled / idle /
+tracking / engaged / smoldering / fire-out / restoring).
+
+The same logic can also run without MQTT (a laptop next to the stove, or
+while the bridge is down):
+
+```sh
+.venv/bin/openwood guard --enable          # enable (persisted) and run
+.venv/bin/openwood guard                   # run if enabled (exit 3 if not)
+.venv/bin/openwood guard --disable         # disable (persisted) and exit
+```
+
+`openwood guard` polls WiFi if the stove's IP is known, else the BLE
+stream, and controls over a short on-demand BLE link (like the bridge). A
+lock file keeps the bridge guard and the CLI guard from double-acting, and
+toggling the HA switch off stops a running CLI guard.
+
+To produce per-cycle data for support, run `openwood report` on a Home
+Assistant history export or a `watch --log` CSV:
+
+```sh
+.venv/bin/openwood report logs/history_all.csv --csv-dir /tmp/cycles
+# -> one CSV per burn cycle + cycles_summary.csv; --json for the summary
+```
+
 ## Project layout
 
 ```
@@ -387,6 +489,8 @@ src/openwood/
   protocol.py         UUIDs, register map, parsers, error codes
   client.py           bleak-based Stove client
   cli.py              argparse CLI
+  stuck.py            stuck-LIGHTING detection + powercut rescue guard
+  report.py           burn-cycle analysis of HA history / watch CSVs
   mqtt_bridge.py      Home Assistant MQTT bridge
 PROTOCOL.md           full protocol documentation
 ```
