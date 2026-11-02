@@ -51,9 +51,10 @@ returns a list of actions for the caller to execute against the stove:
 - "refuel_flare": door held open for `door_gate` seconds while in
   powercut (the user is refuelling): write special_mode(3) to reboot the
   controller so the fresh fuel re-ignites. Only when `refuel_assist` is
-  on. The guard disengages but keeps the mode it replaced, so it can
-  re-engage if the re-lit fire sticks, or restore the mode once the fire
-  establishes / dies.
+  on, and suspended while a manual powercut hold is active (the HA
+  "Power cut mode" switch). The guard disengages but keeps the mode it
+  replaced, so it can re-engage if the re-lit fire sticks, or restore
+  the mode once the fire establishes / dies.
 - "restore": re-apply the mode/level/setpoint/extended-burn the guard
   replaced (the exit/flare restart resets them); retried until the stove
   actually holds the mode, since writes are reverted while the state
@@ -114,7 +115,7 @@ class StuckGuard:
         exit_temp: float = 60.0,
         exit_minutes: float = 10.0,
         refuel_assist: bool = True,
-        door_gate: float = 20.0,
+        door_gate: float = 5.0,
         restore_interval: float = 300.0,
         restore_timeout: float = 4 * 3600.0,
         enabled: bool = True,
@@ -141,6 +142,7 @@ class StuckGuard:
         self.last_restore_attempt: float = 0.0
         self.restore_attempted = False
         self.restore_deadline: float | None = None
+        self.manual = False               # manual powercut hold (HA switch)
         self.original: tuple[int, int | None, float | None, bool | None] | None = None
         # last observation (used by state())
         self.last_bc: int | None = None
@@ -182,6 +184,24 @@ class StuckGuard:
         if not on:
             self._reset()
 
+    def manual_powercut(self, on: bool, now: float) -> None:
+        """Manually hold or clear powercut mode (the HA powercut switch).
+
+        While held, the refuel-assist flare is suspended: a door open
+        (blow on the fire, or a refuel) keeps the throttled nominal air
+        instead of rebooting the controller into a wide-open restart. The
+        guard still adopts the powercut on the next step and will exit and
+        restore it when the fire is out. Releasing the hold disengages the
+        guard and opens a re-engage window, in case the re-lit fire sticks
+        in LIGHTING again.
+        """
+        if on:
+            self.manual = True
+        else:
+            self.manual = False
+            if self.engaged:
+                self._finish_engagement(now, pending_engage=True)
+
     def _reset(self) -> None:
         self.max_temp = None
         self.backstop_since = None
@@ -193,6 +213,7 @@ class StuckGuard:
         self.last_restore_attempt = 0.0
         self.restore_attempted = False
         self.restore_deadline = None
+        self.manual = False
         self.original = None
 
     def _finish_engagement(self, now: float, pending_engage: bool = False) -> None:
@@ -257,7 +278,9 @@ class StuckGuard:
             self.pending_engage_until = None
 
         # -- refuel assist: door held during powercut -> flare ----------
-        if (self.engaged and self.refuel_assist and self.door_since is not None
+        # (suspended while the user holds a manual powercut from HA)
+        if (self.engaged and self.refuel_assist and not self.manual
+                and self.door_since is not None
                 and now - self.door_since >= self.door_gate
                 and (self.pending_engage_until is None
                      or now >= self.pending_engage_until)):

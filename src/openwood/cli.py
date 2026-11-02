@@ -962,9 +962,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="refuel assist: door held open in powercut mode "
                         "reboots the controller so fresh fuel re-ignites "
                         "(default on; --no-refuel-assist)")
-    p.add_argument("--door-gate", type=float, default=20.0,
+    p.add_argument("--door-gate", type=float, default=5.0,
                    help="seconds the door must be held open for the refuel "
-                        "flare (default 20)")
+                        "flare (default 5)")
     p.set_defaults(func=cmd_guard)
 
     p = sub.add_parser(
@@ -1085,9 +1085,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="refuel assist: door held open in powercut mode "
                         "reboots the controller so fresh fuel re-ignites "
                         "(default on; --no-stuck-guard-refuel-assist)")
-    p.add_argument("--stuck-guard-door-gate", type=float_or_none, default=20.0,
+    p.add_argument("--stuck-guard-door-gate", type=float_or_none, default=5.0,
                    help="seconds the door must be held open for the refuel "
-                        "flare (default 20)")
+                        "flare (default 5)")
     p.set_defaults(func=None)  # wired in main()
 
     return ap

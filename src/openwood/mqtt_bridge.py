@@ -112,6 +112,7 @@ class DiscoveryBuilder:
             ("extended_burn", "Extended burn"),
             ("alerts", "Reload alerts"),
             ("stuck_guard_enabled", "Stuck guard"),
+            ("powercut", "Power cut mode"),
         ]
         for key, label in switches:
             cfg = {
@@ -259,7 +260,7 @@ async def run_mqtt_bridge(args) -> int:
         exit_temp=float(getattr(args, "stuck_guard_exit_temp", None) or 60.0),
         exit_minutes=float(getattr(args, "stuck_guard_exit_minutes", None) or 10.0),
         refuel_assist=bool(getattr(args, "stuck_guard_refuel_assist", True)),
-        door_gate=float(getattr(args, "stuck_guard_door_gate", None) or 20.0),
+        door_gate=float(getattr(args, "stuck_guard_door_gate", None) or 5.0),
         enabled=guard_enabled,
     )
     log.info(
@@ -318,6 +319,30 @@ async def run_mqtt_bridge(args) -> int:
             config.set_stuck_guard(on)
             log.info("stuck guard: %s (persisted)",
                      "enabled" if on else "disabled")
+        elif payload_topic.endswith("powercut"):
+            on = payload == "ON"
+            now = time.monotonic()
+            guard.manual_powercut(on, now)
+            if on:
+                log.warning(
+                    "power cut mode: engaged manually (refuel assist "
+                    "suspended while held)")
+                try:
+                    await with_stove(
+                        lambda s: s.special_mode(P.SPECIAL_POWERCUT))
+                except Exception as e:
+                    log.error("power cut mode: engage failed: %s", e)
+            else:
+                log.warning(
+                    "power cut mode: released manually (controller "
+                    "restarts; mode resets to Automatic, Extended Burn off)")
+                try:
+                    await with_stove(
+                        lambda s: s.special_mode(P.SPECIAL_CANCEL))
+                except Exception as e:
+                    log.warning(
+                        "power cut mode: release write dropped (%s); the "
+                        "restart usually lands anyway", e)
 
     def on_message(_client, _userdata, msg):
         payload = msg.payload.decode().strip()
@@ -374,6 +399,7 @@ async def run_mqtt_bridge(args) -> int:
         builder.topic("command", "extended_burn"),
         builder.topic("command", "alerts"),
         builder.topic("command", "stuck_guard_enabled"),
+        builder.topic("command", "powercut"),
     ]:
         client.subscribe(topic)
     if ext_topic:
@@ -408,6 +434,8 @@ async def run_mqtt_bridge(args) -> int:
         topics["stuck_guard"] = "ON" if guard.engaged else "OFF"
         topics["stuck_guard_enabled"] = "ON" if guard.enabled else "OFF"
         topics["stuck_guard_state"] = guard.state()
+        topics["powercut"] = (
+            "ON" if st.special_mode == P.SPECIAL_POWERCUT else "OFF")
         if ext_topic:
             topics["ext_temp"] = round(ext["temp"], 1) if ext["temp"] is not None else None
         for key, value in topics.items():

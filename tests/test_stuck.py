@@ -119,10 +119,10 @@ def test_refuel_flare():
     # the user opens the door (refuelling)
     t += 30
     assert g.step(st(POWERCUT_STATE, 150, special=1, door=True), t) == []
-    # gate not reached yet (19 s)
-    t += 19
+    # gate not reached yet (4 s)
+    t += 4
     assert g.step(st(POWERCUT_STATE, 150, special=1, door=True), t) == []
-    # door held 20 s -> flare (controller reboot so the fresh fuel re-ignites)
+    # door held 5 s -> flare (controller reboot so the fresh fuel re-ignites)
     t += 1
     assert g.step(st(POWERCUT_STATE, 150, special=1, door=True), t) == ["refuel_flare"]
     assert not g.engaged
@@ -148,6 +148,56 @@ def test_refuel_assist_off():
     g.step(st(POWERCUT_STATE, 150, special=1, door=True), t)
     t += 30
     assert g.step(st(POWERCUT_STATE, 150, special=1, door=True), t) == []
+
+
+# -- guard: manual powercut hold (HA switch) ---------------------------------
+
+
+def test_manual_powercut_suspends_flare():
+    g = _guard()
+    t = 0.0
+    g.step(st(LIGHTING_E, 350, mode=0, level=3), t)
+    t += 60
+    g.step(st(LIGHTING_E, 330, mode=0, level=3), t)  # engage
+    t += 10
+    g.step(st(POWERCUT_STATE, 300, special=1), t)  # adopted
+    # the user holds powercut from HA: the flare is suspended, the door
+    # can stay open as long as they like
+    g.manual_powercut(True, t)
+    t += 30
+    assert g.step(st(POWERCUT_STATE, 150, special=1, door=True), t) == []
+    t += 300
+    assert g.step(st(POWERCUT_STATE, 150, special=1, door=True), t) == []
+    assert g.engaged  # still holding the nominal air, no flare
+    # releasing the hold disengages (the switch OFF write reboots the
+    # controller) and keeps the original mode for the restore
+    g.manual_powercut(False, t)
+    assert not g.manual
+    assert not g.engaged
+    assert g.original == (0, 3, None, None)
+    assert g.state() == "restoring"
+    # the stove is rebooting: no re-adoption of the powercut within the
+    # pending window, and no flare while the guard is disengaged
+    t += 30
+    assert g.step(st(POWERCUT_STATE, 150, special=1, door=True), t) == []
+    assert not g.engaged
+    # past the 120 s window: a re-lit stuck fire can be re-engaged
+    t += 90
+    g.step(st(LIGHTING_E, 350, mode=0, level=3), t)  # re-peak
+    t += 60
+    assert g.step(st(LIGHTING_E, 329, mode=0, level=3), t) == ["engage"]
+
+
+def test_manual_flag_resets_on_disable():
+    g = _guard()
+    g.manual_powercut(True, 0.0)
+    assert g.manual
+    # disabling drops all tracking, including the manual hold
+    g.set_enabled(False)
+    assert not g.manual
+    # a disabled guard is inert: no adoption, no flare
+    assert g.step(st(POWERCUT_STATE, 150, special=1, door=True), 10.0) == []
+    assert not g.manual
 
 
 # -- guard: enabled toggle ---------------------------------------------------
