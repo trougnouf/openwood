@@ -10,7 +10,7 @@ Reverse engineered from the Android app `com.charnwood.charnwoodcontrol_v2`
 | Path | Usage |
 |---|---|
 | BLE (primary) | Control, status, WiFi provisioning, time sync |
-| WiFi HTTP (after provisioning) | `GET http://<stove-ip>/get-reading-set` → status string |
+| WiFi HTTP (after provisioning) | `GET http://<stove-ip>/get-reading-set` → status string; `GET http://<stove-ip>/get-log` → daily on-stove logs (see below) |
 | Vendor server | `GET <update-server>/info` → firmware metadata; `https://www.charnwood.com/fms?a=<model>&b=<serial>` |
 
 - The stove advertises BLE service `116eff00-d316-476f-b90e-e8b186ac4bc5`
@@ -148,6 +148,52 @@ The HTTP endpoint `/get-reading-set` returns the same style of string in a
   [33] mode | [34:38] error | [38:40] level | [40:44] p | [44:48] q |
   [48:52] r | [52] s | [53] fuel_alert | [54] state | [55:59] board temp
 ```
+
+## On-stove daily logs (`/get-log`)
+
+The stove records one log entry per minute and serves each day as a
+plain-text file over the same (unauthenticated) HTTP server as
+`/get-reading-set`:
+
+```
+GET http://<stove-ip>/get-log?log=/logs/<YYYY>/<YYYYMMDD>.log[&sn=<serial>]
+```
+
+- One record per minute, ~46 KB per day (1439–1440 records); a record is
+  31 hex chars followed by `.` with no newlines.
+- Retention covers every day since commissioning so far (rolling buffer;
+  earlier dates return a plain-text `Log file not found:` error, cold
+  stove/days without a file included; the app also handles an
+  `SD card not detected` error, i.e. the log store is a card on the
+  controller).
+- The app's Support screen downloads exactly this file and emails it as
+  `<date>.log`; the Graphs tab decodes the same data for plotting.
+- Timestamps are the stove's own clock — observed running ~1 h fast on
+  some days (e.g. 2026-10-21), so do not assume log time == local time.
+
+Record layout (big-endian hex; `h.q` = signed 16-bit as elsewhere):
+
+```
+[0:3]   minutes-of-day
+[3:7]   room temp /10
+[7:11]  stove temp (°C, raw)
+[11:15] board temp /10
+[15:18] convection fan raw (x100/400 -> %)
+[18:21] air valve 1 raw (0 = open, 1023 = closed)
+[21:24] air valve 2 raw
+[24:27] air valve 3 raw
+[27:29] door open flag (1 = open)
+[29:31] burn cycle (same numbering as the status string)
+```
+
+(The app stores these as its `Readings` columns: roomtemp, stovetemp,
+doorevent, stovestate, lightlevel (fan), boardtemp.)
+
+An archive fetched this way lives in `logs/stove-logs/` (from the
+commissioning day, 2026-10-08). It is what was sent to Charnwood R&D as
+evidence of the stuck-LIGHTING bug: the log shows the burn cycle pinned
+at LIGHTING E (18) for entire burns at 350–400 °C stove temperature, with
+the air valves wide open (raw 0), dropping straight to SLEEP.
 
 ## Modes (per the Aire 300/400/500/700 manual)
 
