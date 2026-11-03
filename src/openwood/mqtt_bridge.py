@@ -484,6 +484,7 @@ async def run_mqtt_bridge(args) -> int:
     last_snapshot = None
     wifi_failures = 0
     last_wifi_retry = 0.0
+    last_full_poll = time.monotonic()
     try:
         while True:
             if mqtt_rc["code"] is not None and mqtt_rc["code"] != 0:
@@ -496,6 +497,10 @@ async def run_mqtt_bridge(args) -> int:
                     # If we fell back to BLE due to a WiFi outage, probe
                     # WiFi every 10 min and switch back when it revives
                     # (the stove's WiFi stack is unreliable in SLEEP).
+                    if ip is None:
+                        # the IP may have been learned over BLE since startup
+                        # (or the config was rewritten after we started)
+                        ip = config.get_ip(address)
                     if ip and time.monotonic() - last_wifi_retry > 600:
                         last_wifi_retry = time.monotonic()
                         try:
@@ -511,13 +516,18 @@ async def run_mqtt_bridge(args) -> int:
                         except Exception:
                             pass
                     age = stove.push_age()
+                    # Pushes only carry *changed* registers: a change missed
+                    # while the link was down stays stale forever. Poll in
+                    # full at least every 5 min even when pushes flow.
                     needs_poll = (
                         not stove.notifications_active
                         or age is None
                         or age > max(poll, 30.0)
+                        or time.monotonic() - last_full_poll > 300.0
                     )
                     if needs_poll:
                         await stove.read_all()
+                        last_full_poll = time.monotonic()
                     st = stove.state
                 await ext_thermostat_step(st)
                 for action in guard.step(st, time.monotonic()):
@@ -588,6 +598,9 @@ async def run_mqtt_bridge(args) -> int:
                                 log.info("stove reports no WiFi IP; "
                                          "forgot the stale one")
                             ble_stream = True
+                            last_full_poll = time.monotonic()
+                            if st.ip_address:
+                                ip = st.ip_address
                         except Exception as e2:
                             log.error("BLE fallback connect failed: %s", e2)
                             await asyncio.sleep(10)
@@ -603,6 +616,10 @@ async def run_mqtt_bridge(args) -> int:
                 try:
                     await stove.connect()
                     await stove.subscribe_notifications()
+                    # reseed the full state: pushes missed while the link was
+                    # down would otherwise leave registers stale forever
+                    await stove.read_all()
+                    last_full_poll = time.monotonic()
                 except Exception as e2:
                     log.error("reconnect failed: %s", e2)
             await asyncio.sleep(poll if wifi_mode else
